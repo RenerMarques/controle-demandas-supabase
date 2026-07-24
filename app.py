@@ -1,82 +1,161 @@
-import streamlit as st
 import logging
-from config_supabase import carregar_dados_demandas, carregar_dados_modelos
+
+import streamlit as st
+
+from config_supabase import (
+    carregar_dados_demandas,
+    carregar_dados_modelos,
+)
+
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="Gestão Integrada - Supabase", layout="wide")
 
-st.title("🏠 Sistema de Gestão Integrada (Supabase)")
-st.markdown("Bem-vindo ao painel central com banco de dados PostgreSQL")
+st.set_page_config(
+    page_title="Gestão Integrada - Supabase",
+    page_icon="📋",
+    layout="wide",
+)
 
-# --- MÉTRICAS ---
+
+st.title("🏠 Sistema de Gestão Integrada")
+st.markdown(
+    "Painel central para controle de demandas, modelos e capítulos."
+)
+
+
+# -------------------------------------------------------------------
+# MÉTRICAS PRINCIPAIS
+# -------------------------------------------------------------------
+
 try:
-    df_d = carregar_dados_demandas()
-    df_m = carregar_dados_modelos()
+    df_demandas = carregar_dados_demandas()
+    df_modelos = carregar_dados_modelos()
 
     st.subheader("📊 Visão Geral")
+
     col1, col2, col3 = st.columns(3)
-    col1.metric("📋 Demandas", len(df_d))
-    col2.metric("🔧 Modelos", len(df_m))
-    col3.metric("✅ Status", "Operacional")
-except Exception as e:
-    st.error(f"❌ Erro ao carregar dados: {str(e)}")
-    logger.error(f"Erro ao carregar métricas: {e}", exc_info=True)
+
+    with col1:
+        st.metric("📋 Demandas", len(df_demandas))
+
+    with col2:
+        st.metric("🔧 Modelos", len(df_modelos))
+
+    with col3:
+        st.metric("✅ Status", "Operacional")
+
+except Exception:
+    logger.exception("Erro ao carregar as métricas da página inicial")
+    st.error("❌ Não foi possível carregar as métricas.")
+
 
 st.divider()
 
-# --- NAVEGAÇÃO ---
-col_left, col_right = st.columns([1, 2])
 
-with col_left:
-    st.subheader("🎯 Acesso Rápido")
+# -------------------------------------------------------------------
+# NAVEGAÇÃO
+# -------------------------------------------------------------------
 
-    if st.button("📋 Módulo de Demandas", use_container_width=True):
+col_esquerda, col_direita = st.columns([1, 2])
+
+
+with col_esquerda:
+    st.subheader("🎯 Acesso rápido")
+
+    if st.button(
+        "📋 Módulo de Demandas",
+        use_container_width=True,
+    ):
         st.switch_page("pages/Demandas.py")
 
-    if st.button("📚 Módulo de Capítulos", use_container_width=True):
+    if st.button(
+        "📚 Módulo de Capítulos",
+        use_container_width=True,
+    ):
         st.switch_page("pages/Capitulos.py")
 
-    if st.button("🔧 Módulo de Modelos", use_container_width=True):
+    if st.button(
+        "🔧 Módulo de Modelos",
+        use_container_width=True,
+    ):
         st.switch_page("pages/Modelos.py")
 
-    if st.button("📊 Dashboard Analítico", use_container_width=True):
+    if st.button(
+        "📊 Dashboard Analítico",
+        use_container_width=True,
+    ):
         st.switch_page("pages/Dashboard.py")
 
-    st.write("---")
-    if st.button("🔄 Atualizar Dados", use_container_width=True):
-        with st.spinner("Atualizando cache..."):
-            st.cache_data.clear()
-            st.success("✅ Cache atualizado!")
-            st.rerun()
+    st.divider()
 
-with col_right:
-    st.subheader("📈 Atividade Recente")
+    if st.button(
+        "🔄 Atualizar dados",
+        use_container_width=True,
+    ):
+        st.cache_data.clear()
+        st.success("✅ Cache atualizado.")
+        st.rerun()
+
+
+# -------------------------------------------------------------------
+# ATIVIDADE RECENTE
+# -------------------------------------------------------------------
+
+with col_direita:
+    st.subheader("📈 Atividade recente")
+
     try:
-        if not df_d.empty:
-            st.dataframe(
-                df_d[['demanda', 'tipo', 'modulo', 'manual', 'versao']].head(5),
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
+        if df_demandas.empty:
             st.info("Nenhuma demanda cadastrada ainda.")
-    except Exception as e:
-        st.error(f"❌ Erro ao exibir atividade: {str(e)}")
+        else:
+            colunas = [
+                "demanda",
+                "tipo",
+                "modulo",
+                "manual",
+                "versao",
+            ]
 
-# --- AVISOS ---
+            colunas_existentes = [
+                coluna
+                for coluna in colunas
+                if coluna in df_demandas.columns
+            ]
+
+            st.dataframe(
+                df_demandas[colunas_existentes].head(10),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    except Exception:
+        logger.exception("Erro ao exibir atividade recente")
+        st.error("❌ Não foi possível exibir a atividade recente.")
+
+
+# -------------------------------------------------------------------
+# AVISOS
+# -------------------------------------------------------------------
+
 st.divider()
+
 st.subheader("📢 Comunicados")
-c_av1, c_av2 = st.columns(2)
-with c_av1:
-    st.info("ℹ️ Projeto migrado para Supabase (PostgreSQL)")
-with c_av2:
-    st.success("✅ Sistema operacional e totalmente gratuito!")
 
-# --- RODAPÉ ---
+col_aviso_1, col_aviso_2 = st.columns(2)
+
+with col_aviso_1:
+    st.info("ℹ️ O sistema utiliza o Supabase como banco de dados.")
+
+with col_aviso_2:
+    st.success("✅ Aplicação carregada com sucesso.")
+
+
 st.divider()
-st.write("© 2026 Gestão Integrada | Versão 2.0.0 (Supabase)")
+
+st.caption("Gestão Integrada | Versão 2.0.0")

@@ -1,241 +1,836 @@
-import streamlit as st
-import pandas as pd
 import io
 import logging
 from datetime import datetime
-from reportlab.lib.pagesizes import A4
+
+import pandas as pd
+import streamlit as st
+
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
-from config_supabase import (
-    carregar_dados_modelos,
-    inserir_modelo,
-    atualizar_modelo,
-    deletar_modelo,
-    LISTA_MODULOS, LISTA_MANUAIS, LISTA_MONTADORAS
+from reportlab.platypus import (
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
 )
 
+from config_supabase import (
+    LISTA_MANUAIS,
+    LISTA_MODULOS,
+    LISTA_MONTADORAS,
+    atualizar_modelo,
+    carregar_dados_modelos,
+    deletar_modelo,
+    inserir_modelo,
+)
+
+
 logger = logging.getLogger(__name__)
-st.set_page_config(page_title="Gestão de Modelos", layout="wide")
-st.title("📋 Controle de Modelos")
-
-COLUNAS_ESPERADAS = ["modulo", "manual", "capitulo", "montadora", "modelo"]
-
-# --- FUNÇÕES AUXILIARES ---
-def get_selectbox_index(lista, valor, nome_campo):
-    """Retorna o índice seguro para selectbox."""
-    try:
-        return lista.index(valor)
-    except ValueError:
-        st.warning(f"⚠️ '{valor}' não está na lista de {nome_campo}. Usando padrão.")
-        logger.warning(f"Valor '{valor}' não encontrado em {nome_campo}")
-        return 0
 
 
-def validar_modelo(modulo, manual, capitulo, montadora, modelo):
-    """Valida campos obrigatórios."""
+st.set_page_config(
+    page_title="Gestão de Modelos",
+    page_icon="🔧",
+    layout="wide",
+)
+
+st.title("🔧 Controle de Modelos")
+
+
+COLUNAS_ESPERADAS = [
+    "modulo",
+    "manual",
+    "capitulo",
+    "montadora",
+    "modelo",
+]
+
+
+# -------------------------------------------------------------------
+# FUNÇÕES AUXILIARES
+# -------------------------------------------------------------------
+
+def normalizar_dataframe(df):
+    """
+    Normaliza nomes e valores do DataFrame recebido do Excel.
+    """
+    df = df.copy()
+
+    df.columns = (
+        df.columns
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    for coluna in df.columns:
+        df[coluna] = (
+            df[coluna]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+    return df
+
+
+def validar_modelo(
+    modulo,
+    manual,
+    capitulo,
+    montadora,
+    modelo,
+):
+    """
+    Valida os campos obrigatórios de um modelo.
+    """
     erros = []
-    if not modelo.strip():
-        erros.append("Modelo é obrigatório")
-    if not capitulo.strip():
-        erros.append("Capítulo é obrigatório")
+
+    campos = {
+        "Módulo": modulo,
+        "Manual": manual,
+        "Capítulo": capitulo,
+        "Montadora": montadora,
+        "Modelo": modelo,
+    }
+
+    for nome, valor in campos.items():
+        if not str(valor).strip():
+            erros.append(f"{nome} é obrigatório.")
 
     if erros:
-        st.error("❌ Erros de validação:\n" + "\n".join(f"• {e}" for e in erros))
+        st.error(
+            "❌ Corrija os seguintes problemas:\n\n"
+            + "\n".join(f"- {erro}" for erro in erros)
+        )
         return False
+
     return True
 
 
 def validar_dataframe_upload(df):
-    """Valida DataFrame do upload."""
-    erros = []
-
-    # Verifica colunas
-    colunas_faltando = [c for c in COLUNAS_ESPERADAS if c not in df.columns]
-    if colunas_faltando:
-        erros.append(f"Colunas faltando: {', '.join(colunas_faltando)}")
-
-    # Verifica linhas vazias
-    if not df.empty and df[COLUNAS_ESPERADAS].isnull().all(axis=1).any():
-        erros.append("Há linhas completamente vazias")
-
-    # Verifica campo MODELO obrigatório
-    if not df.empty and (df["modelo"].isnull().any() or (df["modelo"].astype(str).str.strip() == "").any()):
-        erros.append("Campo MODELO contém valores vazios")
-
-    if erros:
-        st.error("❌ Erros no arquivo:\n" + "\n".join(f"• {e}" for e in erros))
+    """
+    Verifica se o Excel possui as colunas esperadas.
+    """
+    if df.empty:
+        st.error("❌ O arquivo está vazio.")
         return False
+
+    df_normalizado = normalizar_dataframe(df)
+
+    colunas_faltando = [
+        coluna
+        for coluna in COLUNAS_ESPERADAS
+        if coluna not in df_normalizado.columns
+    ]
+
+    if colunas_faltando:
+        st.error(
+            "❌ Colunas faltando no arquivo:\n\n"
+            + "\n".join(f"- {coluna}" for coluna in colunas_faltando)
+        )
+        return False
+
+    df_validacao = df_normalizado[COLUNAS_ESPERADAS]
+
+    linhas_vazias = df_validacao.eq("").all(axis=1)
+
+    if linhas_vazias.any():
+        st.error("❌ Existem linhas completamente vazias no arquivo.")
+        return False
+
+    if df_validacao["modelo"].eq("").any():
+        st.error("❌ Existem modelos sem nome.")
+        return False
+
     return True
 
 
+def obter_opcao_registro(df, coluna_principal):
+    """
+    Cria opções de seleção usando o ID do banco.
+    Evita editar o registro errado quando existem nomes repetidos.
+    """
+    opcoes = []
+
+    for _, registro in df.iterrows():
+        identificador = registro.get("id")
+        nome = registro.get(coluna_principal, "")
+
+        opcoes.append(
+            f"{identificador} - {nome}"
+        )
+
+    return opcoes
+
+
+def obter_id_da_opcao(opcao):
+    """
+    Extrai o ID da opção exibida no selectbox.
+    """
+    return int(str(opcao).split(" - ", 1)[0])
+
+
 def gerar_pdf_modelos(df):
-    """Gera PDF formatado com tabela de modelos."""
+    """
+    Gera um relatório PDF.
+    """
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    elements = []
 
-    # Estilos
-    styles = getSampleStyleSheet()
-
-    # Título
-    title = Paragraph("Relatório de Modelos", styles['Heading1'])
-    elements.append(title)
-    elements.append(Spacer(1, 12))
-
-    # Data do relatório
-    data_rel = Paragraph(
-        f"Gerado em: {datetime.now().strftime('%d/%m/%Y às %H:%M')}",
-        styles['Normal']
+    documento = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=20,
+        leftMargin=20,
+        topMargin=20,
+        bottomMargin=20,
     )
-    elements.append(data_rel)
-    elements.append(Spacer(1, 12))
 
-    # Tabela
-    if not df.empty:
-        colunas = list(df.columns)
-        data = [colunas] + df.values.tolist()
+    estilos = getSampleStyleSheet()
+    elementos = []
 
-        # Calcula largura das colunas
-        col_widths = [80, 100, 80, 100, 80]
+    elementos.append(
+        Paragraph(
+            "Relatório de Modelos",
+            estilos["Heading1"],
+        )
+    )
 
-        table = Table(data, colWidths=col_widths)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('FONTSIZE', (0, 1), (-1, -1), 9),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
-        ]))
-        elements.append(table)
+    elementos.append(Spacer(1, 10))
+
+    elementos.append(
+        Paragraph(
+            "Gerado em: "
+            + datetime.now().strftime("%d/%m/%Y às %H:%M"),
+            estilos["Normal"],
+        )
+    )
+
+    elementos.append(Spacer(1, 15))
+
+    if df.empty:
+        elementos.append(
+            Paragraph(
+                "Nenhum registro encontrado.",
+                estilos["Normal"],
+            )
+        )
     else:
-        elements.append(Paragraph("Nenhum registro encontrado.", styles['Normal']))
+        df_pdf = df.copy()
 
-    doc.build(elements)
+        dados = [
+            list(df_pdf.columns)
+        ] + df_pdf.astype(str).values.tolist()
+
+        tabela = Table(
+            dados,
+            repeatRows=1,
+        )
+
+        tabela.setStyle(
+            TableStyle(
+                [
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.HexColor("#1F4E78"),
+                    ),
+                    (
+                        "TEXTCOLOR",
+                        (0, 0),
+                        (-1, 0),
+                        colors.white,
+                    ),
+                    (
+                        "FONTNAME",
+                        (0, 0),
+                        (-1, 0),
+                        "Helvetica-Bold",
+                    ),
+                    (
+                        "FONTSIZE",
+                        (0, 0),
+                        (-1, -1),
+                        7,
+                    ),
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.5,
+                        colors.grey,
+                    ),
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "MIDDLE",
+                    ),
+                    (
+                        "ROWBACKGROUNDS",
+                        (0, 1),
+                        (-1, -1),
+                        [colors.white, colors.HexColor("#EAF2F8")],
+                    ),
+                ]
+            )
+        )
+
+        elementos.append(tabela)
+
+    documento.build(elementos)
     buffer.seek(0)
+
     return buffer
 
 
-# --- ABAS ---
-tab_m1, tab_m2, tab_m3, tab_m4, tab_m5 = st.tabs([
-    "➕ Adicionar", "🔍 Buscar", "📝 Editar", "🗑️ Excluir", "📊 Relatórios"
-])
+def carregar_modelos_com_segurança():
+    """
+    Carrega os modelos sem interromper a página inteira.
+    """
+    try:
+        return carregar_dados_modelos()
+    except Exception:
+        logger.exception("Erro ao carregar modelos")
+        st.error("❌ Não foi possível carregar os modelos.")
+        return pd.DataFrame()
 
-# ============ TAB 1: ADICIONAR ============
-with tab_m1:
-    st.subheader("➕ Adicionar Modelos")
-    modo_add = st.radio("Método de cadastro:", ["Manual", "Upload em Lote (Excel)"], horizontal=True)
 
-    if modo_add == "Manual":
-        with st.form("form_add_modelo", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                m_modulo = st.selectbox("Módulo", LISTA_MODULOS)
-                m_manual = st.selectbox("Manual", LISTA_MANUAIS)
-                m_capitulo = st.text_input("Capítulo").strip()
-            with col2:
-                m_montadora = st.selectbox("Montadora", LISTA_MONTADORAS)
-                m_modelo = st.text_input("Modelo").strip()
+# -------------------------------------------------------------------
+# ABAS
+# -------------------------------------------------------------------
 
-            if st.form_submit_button("💾 Salvar Modelo"):
-                if validar_modelo(m_modulo, m_manual, m_capitulo, m_montadora, m_modelo):
-                    with st.spinner("Salvando..."):
-                        sucesso, msg = inserir_modelo(m_modulo, m_manual, m_capitulo, m_montadora, m_modelo)
-                        if sucesso:
-                            st.success(msg)
-                            logger.info(f"Modelo criado: {m_modelo}")
-                        else:
-                            st.error(msg)
+tab_adicionar, tab_buscar, tab_editar, tab_excluir, tab_relatorios = st.tabs(
+    [
+        "➕ Adicionar",
+        "🔍 Buscar",
+        "📝 Editar",
+        "🗑️ Excluir",
+        "📊 Relatórios",
+    ]
+)
 
-    else:  # Upload em Lote
-        st.info("📋 O arquivo Excel deve conter as colunas: modulo, manual, capitulo, montadora, modelo")
-        uploaded_file = st.file_uploader("Escolha o arquivo Excel", type=["xlsx"])
 
-        if uploaded_file is not None:
-            with st.spinner("Lendo arquivo..."):
-                try:
-                    df_up = pd.read_excel(uploaded_file)
-                except Exception as e:
-                    st.error(f"❌ Não foi possível ler o arquivo: {e}")
-                    logger.error(f"Erro ao ler arquivo Excel: {e}", exc_info=True)
-                    df_up = None
+# -------------------------------------------------------------------
+# ABA ADICIONAR
+# -------------------------------------------------------------------
 
-            if df_up is not None:
-                if validar_dataframe_upload(df_up):
-                    df_preview = df_up[COLUNAS_ESPERADAS].fillna("")
-                    st.dataframe(df_preview.head(10), use_container_width=True, hide_index=True)
-                    st.caption(f"📊 {len(df_preview)} linha(s) prontas para importação.")
+with tab_adicionar:
+    st.subheader("➕ Adicionar modelo")
 
-                    if st.button("✅ Confirmar Importação em Lote"):
-                        with st.spinner("Importando..."):
-                            contador_sucesso = 0
-                            contador_erro = 0
+    modo = st.radio(
+        "Método de cadastro:",
+        [
+            "Manual",
+            "Upload em lote",
+        ],
+        horizontal=True,
+    )
 
-                            for idx, row in df_preview.iterrows():
-                                sucesso, msg = inserir_modelo(
-                                    row['modulo'], row['manual'], row['capitulo'],
-                                    row['montadora'], row['modelo']
-                                )
-                                if sucesso:
-                                    contador_sucesso += 1
-                                else:
-                                    contador_erro += 1
+    if modo == "Manual":
+        with st.form(
+            "form_adicionar_modelo",
+            clear_on_submit=True,
+        ):
+            coluna_1, coluna_2 = st.columns(2)
 
-                            st.success(f"✅ {contador_sucesso} modelo(s) importado(s) com sucesso!")
-                            if contador_erro > 0:
-                                st.warning(f"⚠️ {contador_erro} modelo(s) falharam")
-                            logger.info(f"Importação em lote: {contador_sucesso} modelos")
+            with coluna_1:
+                modulo = st.selectbox(
+                    "Módulo",
+                    LISTA_MODULOS,
+                )
 
-# ============ TAB 2: BUSCAR ============
-with tab_m2:
-    st.subheader("🔍 Busca Avançada de Modelos")
-    df_mod = carregar_dados_modelos()
+                manual = st.selectbox(
+                    "Manual",
+                    LISTA_MANUAIS,
+                )
 
-    if df_mod.empty:
-        st.info("Nenhum modelo cadastrado ainda.")
+                capitulo = st.text_input(
+                    "Capítulo",
+                ).strip()
+
+            with coluna_2:
+                montadora = st.selectbox(
+                    "Montadora",
+                    LISTA_MONTADORAS,
+                )
+
+                modelo = st.text_input(
+                    "Modelo",
+                ).strip()
+
+            salvar = st.form_submit_button(
+                "💾 Salvar modelo"
+            )
+
+        if salvar:
+            if validar_modelo(
+                modulo,
+                manual,
+                capitulo,
+                montadora,
+                modelo,
+            ):
+                with st.spinner("Salvando modelo..."):
+                    sucesso, mensagem = inserir_modelo(
+                        modulo,
+                        manual,
+                        capitulo,
+                        montadora,
+                        modelo,
+                    )
+
+                if sucesso:
+                    st.success(mensagem)
+                    st.rerun()
+                else:
+                    st.error(mensagem)
+
     else:
-        modo_busca_m = st.radio(
-            "Escolha o método de busca:",
-            ["Filtros em Cascata", "Busca por Campo Específico"],
-            key="radio_mod",
-            horizontal=True
+        st.info(
+            "O Excel deve conter as colunas: "
+            "modulo, manual, capitulo, montadora, modelo"
         )
 
-        if modo_busca_m == "Filtros em Cascata":
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                mod_sel = st.selectbox("Módulo", ["Todos"] + sorted(df_mod["modulo"].unique().tolist()))
-                man_sel = st.selectbox("Manual", ["Todos"] + sorted(df_mod["manual"].unique().tolist()))
-            with c2:
-                mont_sel = st.selectbox("Montadora", ["Todas"] + sorted(df_mod["montadora"].unique().tolist()))
-                cap_sel = st.selectbox("Capítulo", ["Todos"] + sorted(df_mod["capitulo"].unique().tolist()))
-            with c3:
-                model_sel = st.selectbox("Modelo", ["Todos"] + sorted(df_mod["modelo"].unique().tolist()))
+        arquivo = st.file_uploader(
+            "Selecione um arquivo Excel",
+            type=["xlsx"],
+        )
 
-            final_mod = df_mod.copy()
-            if mod_sel != "Todos":
-                final_mod = final_mod[final_mod["modulo"] == mod_sel]
-            if man_sel != "Todos":
-                final_mod = final_mod[final_mod["manual"] == man_sel]
-            if mont_sel != "Todas":
-                final_mod = final_mod[final_mod["montadora"] == mont_sel]
-            if cap_sel != "Todos":
-                final_mod = final_mod[final_mod["capitulo"] == cap_sel]
-            if model_sel != "Todos":
-                final_mod = final_mod[final_mod["modelo"] == model_sel]
+        if arquivo is not None:
+            try:
+                df_upload = pd.read_excel(arquivo)
+                df_upload = normalizar_dataframe(df_upload)
+            except Exception:
+                logger.exception("Erro ao ler o arquivo Excel")
+                st.error("❌ Não foi possível ler o arquivo Excel.")
+                df_upload = None
 
-            st.write(f"**Total de registros:** {len(final_mod)}")
-            st.dataframe(final_mod, use_container_width=True, hide_index=True)
+            if df_upload is not None:
+                if validar_dataframe_upload(df_upload):
+                    df_preview = (
+                        df_upload[COLUNAS_ESPERADAS]
+                        .copy()
+                    )
 
-        else:  # Busca por Campo Específico
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                coluna_alvo = st.selectbox("Selecione o campo:", df_mod.columns.tolist(), key="col_mod")
-            with c2:
-                valor_busca
+                    st.write("Pré-visualização:")
+                    st.dataframe(
+                        df_preview.head(20),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
+                    st.caption(
+                        f"{len(df_preview)} registro(s) encontrado(s)."
+                    )
+
+                    confirmar = st.button(
+                        "✅ Confirmar importação",
+                        key="confirmar_importacao_modelos",
+                    )
+
+                    if confirmar:
+                        total_sucesso = 0
+                        total_erro = 0
+
+                        with st.spinner("Importando modelos..."):
+                            for _, linha in df_preview.iterrows():
+                                sucesso, _ = inserir_modelo(
+                                    linha["modulo"],
+                                    linha["manual"],
+                                    linha["capitulo"],
+                                    linha["montadora"],
+                                    linha["modelo"],
+                                )
+
+                                if sucesso:
+                                    total_sucesso += 1
+                                else:
+                                    total_erro += 1
+
+                        if total_sucesso:
+                            st.success(
+                                f"✅ {total_sucesso} modelo(s) importado(s)."
+                            )
+
+                        if total_erro:
+                            st.warning(
+                                f"⚠️ {total_erro} modelo(s) não foram importados."
+                            )
+
+                        st.rerun()
+
+
+# -------------------------------------------------------------------
+# ABA BUSCAR
+# -------------------------------------------------------------------
+
+with tab_buscar:
+    st.subheader("🔍 Buscar modelos")
+
+    df_modelos = carregar_modelos_com_segurança()
+
+    if df_modelos.empty:
+        st.info("Nenhum modelo cadastrado.")
+    else:
+        colunas_dados = [
+            coluna
+            for coluna in df_modelos.columns
+            if coluna not in ["id", "created_at", "updated_at"]
+        ]
+
+        modo_busca = st.radio(
+            "Método de busca:",
+            [
+                "Filtros",
+                "Busca textual",
+            ],
+            horizontal=True,
+            key="modo_busca_modelos",
+        )
+
+        if modo_busca == "Filtros":
+            col_1, col_2, col_3 = st.columns(3)
+
+            with col_1:
+                modulo_filtro = st.selectbox(
+                    "Módulo",
+                    ["Todos"]
+                    + sorted(
+                        df_modelos["modulo"]
+                        .dropna()
+                        .astype(str)
+                        .unique()
+                        .tolist()
+                    ),
+                    key="filtro_modelo_modulo",
+                )
+
+            with col_2:
+                manual_filtro = st.selectbox(
+                    "Manual",
+                    ["Todos"]
+                    + sorted(
+                        df_modelos["manual"]
+                        .dropna()
+                        .astype(str)
+                        .unique()
+                        .tolist()
+                    ),
+                    key="filtro_modelo_manual",
+                )
+
+            with col_3:
+                montadora_filtro = st.selectbox(
+                    "Montadora",
+                    ["Todas"]
+                    + sorted(
+                        df_modelos["montadora"]
+                        .dropna()
+                        .astype(str)
+                        .unique()
+                        .tolist()
+                    ),
+                    key="filtro_modelo_montadora",
+                )
+
+            resultado = df_modelos.copy()
+
+            if modulo_filtro != "Todos":
+                resultado = resultado[
+                    resultado["modulo"] == modulo_filtro
+                ]
+
+            if manual_filtro != "Todos":
+                resultado = resultado[
+                    resultado["manual"] == manual_filtro
+                ]
+
+            if montadora_filtro != "Todas":
+                resultado = resultado[
+                    resultado["montadora"] == montadora_filtro
+                ]
+
+            st.write(
+                f"**Registros encontrados:** {len(resultado)}"
+            )
+
+            st.dataframe(
+                resultado,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+            coluna = st.selectbox(
+                "Campo",
+                colunas_dados,
+                key="campo_busca_modelos",
+            )
+
+            termo = st.text_input(
+                "Termo de busca",
+                key="termo_busca_modelos",
+            ).strip()
+
+            if termo:
+                resultado = df_modelos[
+                    df_modelos[coluna]
+                    .astype(str)
+                    .str.contains(
+                        termo,
+                        case=False,
+                        regex=False,
+                        na=False,
+                    )
+                ]
+
+                st.write(
+                    f"**Registros encontrados:** {len(resultado)}"
+                )
+
+                st.dataframe(
+                    resultado,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+
+# -------------------------------------------------------------------
+# ABA EDITAR
+# -------------------------------------------------------------------
+
+with tab_editar:
+    st.subheader("📝 Editar modelo")
+
+    df_modelos = carregar_modelos_com_segurança()
+
+    if df_modelos.empty:
+        st.info("Nenhum modelo cadastrado.")
+    else:
+        opcoes = obter_opcao_registro(
+            df_modelos,
+            "modelo",
+        )
+
+        opcao = st.selectbox(
+            "Selecione o modelo:",
+            opcoes,
+            key="modelo_edicao",
+        )
+
+        id_modelo = obter_id_da_opcao(opcao)
+
+        registro = df_modelos[
+            df_modelos["id"] == id_modelo
+        ].iloc[0]
+
+        with st.form("form_editar_modelo"):
+            novo_modulo = st.selectbox(
+                "Módulo",
+                LISTA_MODULOS,
+                index=(
+                    LISTA_MODULOS.index(registro["modulo"])
+                    if registro["modulo"] in LISTA_MODULOS
+                    else 0
+                ),
+            )
+
+            novo_manual = st.selectbox(
+                "Manual",
+                LISTA_MANUAIS,
+                index=(
+                    LISTA_MANUAIS.index(registro["manual"])
+                    if registro["manual"] in LISTA_MANUAIS
+                    else 0
+                ),
+            )
+
+            novo_capitulo = st.text_input(
+                "Capítulo",
+                value=str(registro.get("capitulo", "")),
+            ).strip()
+
+            nova_montadora = st.selectbox(
+                "Montadora",
+                LISTA_MONTADORAS,
+                index=(
+                    LISTA_MONTADORAS.index(registro["montadora"])
+                    if registro["montadora"] in LISTA_MONTADORAS
+                    else 0
+                ),
+            )
+
+            novo_modelo = st.text_input(
+                "Modelo",
+                value=str(registro.get("modelo", "")),
+            ).strip()
+
+            atualizar = st.form_submit_button(
+                "💾 Atualizar modelo"
+            )
+
+        if atualizar:
+            if validar_modelo(
+                novo_modulo,
+                novo_manual,
+                novo_capitulo,
+                nova_montadora,
+                novo_modelo,
+            ):
+                with st.spinner("Atualizando modelo..."):
+                    sucesso, mensagem = atualizar_modelo(
+                        id_modelo,
+                        novo_modulo,
+                        novo_manual,
+                        novo_capitulo,
+                        nova_montadora,
+                        novo_modelo,
+                    )
+
+                if sucesso:
+                    st.success(mensagem)
+                    st.rerun()
+                else:
+                    st.error(mensagem)
+
+
+# -------------------------------------------------------------------
+# ABA EXCLUIR
+# -------------------------------------------------------------------
+
+with tab_excluir:
+    st.subheader("🗑️ Excluir modelo")
+
+    df_modelos = carregar_modelos_com_segurança()
+
+    if df_modelos.empty:
+        st.info("Nenhum modelo cadastrado.")
+    else:
+        opcoes = obter_opcao_registro(
+            df_modelos,
+            "modelo",
+        )
+
+        opcao = st.selectbox(
+            "Selecione o modelo:",
+            [""] + opcoes,
+            key="modelo_exclusao",
+        )
+
+        if opcao:
+            id_modelo = obter_id_da_opcao(opcao)
+
+            registro = df_modelos[
+                df_modelos["id"] == id_modelo
+            ].iloc[0]
+
+            st.warning(
+                "Você está prestes a excluir o modelo: "
+                f"**{registro['modelo']}**"
+            )
+
+            confirmar = st.checkbox(
+                "Confirmo a exclusão permanente.",
+                key="confirmar_exclusao_modelo",
+            )
+
+            if st.button(
+                "🗑️ Excluir definitivamente",
+                type="primary",
+            ):
+                if not confirmar:
+                    st.error(
+                        "❌ Confirme a exclusão antes de continuar."
+                    )
+                else:
+                    with st.spinner("Excluindo modelo..."):
+                        sucesso, mensagem = deletar_modelo(
+                            id_modelo
+                        )
+
+                    if sucesso:
+                        st.success(mensagem)
+                        st.rerun()
+                    else:
+                        st.error(mensagem)
+
+
+# -------------------------------------------------------------------
+# ABA RELATÓRIOS
+# -------------------------------------------------------------------
+
+with tab_relatorios:
+    st.subheader("📊 Relatórios")
+
+    df_modelos = carregar_modelos_com_segurança()
+
+    if df_modelos.empty:
+        st.info("Nenhum modelo cadastrado.")
+    else:
+        colunas_exportacao = [
+            coluna
+            for coluna in df_modelos.columns
+            if coluna not in ["id", "created_at", "updated_at"]
+        ]
+
+        df_exportacao = df_modelos[colunas_exportacao].copy()
+
+        st.dataframe(
+            df_exportacao,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        formato = st.radio(
+            "Formato:",
+            ["Excel", "PDF"],
+            horizontal=True,
+            key="formato_relatorio_modelos",
+        )
+
+        if formato == "Excel":
+            buffer_excel = io.BytesIO()
+
+            with pd.ExcelWriter(
+                buffer_excel,
+                engine="openpyxl",
+            ) as escritor:
+                df_exportacao.to_excel(
+                    escritor,
+                    index=False,
+                    sheet_name="Modelos",
+                )
+
+            buffer_excel.seek(0)
+
+            st.download_button(
+                "📥 Baixar Excel",
+                data=buffer_excel.getvalue(),
+                file_name=(
+                    "relatorio_modelos_"
+                    + datetime.now().strftime("%Y%m%d_%H%M%S")
+                    + ".xlsx"
+                ),
+                mime=(
+                    "application/vnd.openxmlformats-officedocument"
+                    ".spreadsheetml.sheet"
+                ),
+            )
+
+        else:
+            buffer_pdf = gerar_pdf_modelos(df_exportacao)
+
+            st.download_button(
+                "📥 Baixar PDF",
+                data=buffer_pdf.getvalue(),
+                file_name=(
+                    "relatorio_modelos_"
+                    + datetime.now().strftime("%Y%m%d_%H%M%S")
+                    + ".pdf"
+                ),
+                mime="application/pdf",
+            )

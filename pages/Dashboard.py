@@ -1,278 +1,647 @@
-import streamlit as st
+import io
+import logging
+from datetime import datetime
+
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
-import logging
-from config_supabase import carregar_dados_demandas, carregar_dados_modelos, carregar_dados_capitulos
+import streamlit as st
+
+from config_supabase import (
+    carregar_dados_capitulos,
+    carregar_dados_demandas,
+    carregar_dados_modelos,
+)
+
 
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="Dashboard Analítico", layout="wide")
-st.title("📊 Dashboard Analítico")
-st.markdown("Análise completa de demandas, modelos e capítulos")
 
-# --- CARREGAR DADOS ---
+st.set_page_config(
+    page_title="Dashboard Analítico",
+    page_icon="📊",
+    layout="wide",
+)
+
+st.title("📊 Dashboard Analítico")
+st.caption(
+    "Análise de demandas, modelos e capítulos armazenados no Supabase."
+)
+
+
+# -------------------------------------------------------------------
+# FUNÇÕES AUXILIARES
+# -------------------------------------------------------------------
+
+def texto_seguro(valor):
+    if pd.isna(valor):
+        return ""
+
+    return str(valor).strip()
+
+
+def normalizar_dataframe(df):
+    """
+    Garante que as colunas textuais possam ser filtradas sem erro.
+    """
+    df = df.copy()
+
+    colunas_texto = [
+        "demanda",
+        "tipo",
+        "modulo",
+        "manual",
+        "capitulo",
+        "montadora",
+        "versao",
+    ]
+
+    for coluna in colunas_texto:
+        if coluna in df.columns:
+            df[coluna] = (
+                df[coluna]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+    return df
+
+
+def remover_colunas_internas(df):
+    """
+    Remove campos técnicos antes de exibir/exportar.
+    """
+    return df.drop(
+        columns=[
+            "id",
+            "created_at",
+            "updated_at",
+        ],
+        errors="ignore",
+    )
+
+
+# -------------------------------------------------------------------
+# CARREGAR DADOS
+# -------------------------------------------------------------------
+
 try:
     df_demandas = carregar_dados_demandas()
     df_modelos = carregar_dados_modelos()
     df_capitulos = carregar_dados_capitulos()
-except Exception as e:
-    st.error(f"❌ Erro ao carregar dados: {str(e)}")
-    logger.error(f"Erro ao carregar dados para dashboard: {e}", exc_info=True)
+
+    df_demandas = normalizar_dataframe(df_demandas)
+    df_modelos = normalizar_dataframe(df_modelos)
+    df_capitulos = normalizar_dataframe(df_capitulos)
+
+except Exception:
+    logger.exception("Erro ao carregar dados do dashboard")
+    st.error("❌ Não foi possível carregar os dados do dashboard.")
     st.stop()
+
 
 if df_demandas.empty:
-    st.warning("⚠️ Nenhuma demanda cadastrada. Dashboard indisponível.")
+    st.warning(
+        "⚠️ Nenhuma demanda cadastrada. "
+        "Não há dados suficientes para montar o dashboard."
+    )
     st.stop()
 
-# --- FILTROS GLOBAIS ---
-st.subheader("🔍 Filtros Globais")
-col1, col2, col3, col4 = st.columns(4)
 
-with col1:
-    versoes = ["Todas"] + sorted(df_demandas["versao"].unique().tolist())
-    versao_selecionada = st.selectbox("Versão", versoes)
+# -------------------------------------------------------------------
+# FILTROS
+# -------------------------------------------------------------------
 
-with col2:
-    modulos = ["Todos"] + sorted(df_demandas["modulo"].unique().tolist())
-    modulo_selecionado = st.selectbox("Módulo", modulos)
+st.subheader("🔍 Filtros globais")
 
-with col3:
-    tipos = ["Todos"] + sorted(df_demandas["tipo"].unique().tolist())
-    tipo_selecionado = st.selectbox("Tipo", tipos)
+col_1, col_2, col_3, col_4 = st.columns(4)
 
-with col4:
-    montadoras = ["Todas"] + sorted(df_demandas["montadora"].unique().tolist())
-    montadora_selecionada = st.selectbox("Montadora", montadoras)
+with col_1:
+    opcoes_versao = ["Todas"] + sorted(
+        df_demandas["versao"].unique().tolist()
+    )
 
-# --- APLICAR FILTROS ---
-df_filtered = df_demandas.copy()
+    filtro_versao = st.selectbox(
+        "Versão",
+        opcoes_versao,
+        key="dashboard_filtro_versao",
+    )
 
-if versao_selecionada != "Todas":
-    df_filtered = df_filtered[df_filtered["versao"] == versao_selecionada]
+with col_2:
+    opcoes_modulo = ["Todos"] + sorted(
+        df_demandas["modulo"].unique().tolist()
+    )
 
-if modulo_selecionado != "Todos":
-    df_filtered = df_filtered[df_filtered["modulo"] == modulo_selecionado]
+    filtro_modulo = st.selectbox(
+        "Módulo",
+        opcoes_modulo,
+        key="dashboard_filtro_modulo",
+    )
 
-if tipo_selecionado != "Todos":
-    df_filtered = df_filtered[df_filtered["tipo"] == tipo_selecionado]
+with col_3:
+    opcoes_tipo = ["Todos"] + sorted(
+        df_demandas["tipo"].unique().tolist()
+    )
 
-if montadora_selecionada != "Todas":
-    df_filtered = df_filtered[df_filtered["montadora"] == montadora_selecionada]
+    filtro_tipo = st.selectbox(
+        "Tipo",
+        opcoes_tipo,
+        key="dashboard_filtro_tipo",
+    )
 
-# --- KPIs PRINCIPAIS ---
+with col_4:
+    opcoes_montadora = ["Todas"] + sorted(
+        df_demandas["montadora"].unique().tolist()
+    )
+
+    filtro_montadora = st.selectbox(
+        "Montadora",
+        opcoes_montadora,
+        key="dashboard_filtro_montadora",
+    )
+
+
+df_filtrado = df_demandas.copy()
+
+if filtro_versao != "Todas":
+    df_filtrado = df_filtrado[
+        df_filtrado["versao"] == filtro_versao
+    ]
+
+if filtro_modulo != "Todos":
+    df_filtrado = df_filtrado[
+        df_filtrado["modulo"] == filtro_modulo
+    ]
+
+if filtro_tipo != "Todos":
+    df_filtrado = df_filtrado[
+        df_filtrado["tipo"] == filtro_tipo
+    ]
+
+if filtro_montadora != "Todas":
+    df_filtrado = df_filtrado[
+        df_filtrado["montadora"] == filtro_montadora
+    ]
+
+
+if df_filtrado.empty:
+    st.warning(
+        "⚠️ Nenhum registro corresponde aos filtros selecionados."
+    )
+    st.stop()
+
+
+# -------------------------------------------------------------------
+# KPIs
+# -------------------------------------------------------------------
+
 st.divider()
-st.subheader("📈 KPIs Principais")
+st.subheader("📈 Indicadores principais")
 
-col1, col2, col3, col4, col5 = st.columns(5)
+col_1, col_2, col_3, col_4, col_5 = st.columns(5)
 
-with col1:
+with col_1:
     st.metric(
-        "Total de Demandas",
-        len(df_filtered),
-        delta=len(df_filtered) - len(df_demandas) if len(df_filtered) != len(df_demandas) else 0
+        "Demandas filtradas",
+        len(df_filtrado),
+        delta=len(df_filtrado) - len(df_demandas),
     )
 
-with col2:
-    total_modelos = len(df_modelos)
-    st.metric("Total de Modelos", total_modelos)
+with col_2:
+    st.metric(
+        "Total de demandas",
+        len(df_demandas),
+    )
 
-with col3:
-    total_capitulos = len(df_capitulos)
-    st.metric("Total de Capítulos", total_capitulos)
+with col_3:
+    st.metric(
+        "Total de modelos",
+        len(df_modelos),
+    )
 
-with col4:
-    manuais_unicos = df_filtered["manual"].nunique()
-    st.metric("Manuais Únicos", manuais_unicos)
+with col_4:
+    st.metric(
+        "Total de capítulos",
+        len(df_capitulos),
+    )
 
-with col5:
-    montadoras_unicas = df_filtered["montadora"].nunique()
-    st.metric("Montadoras Únicas", montadoras_unicas)
+with col_5:
+    st.metric(
+        "Manuais utilizados",
+        df_filtrado["manual"].nunique(),
+    )
 
-# --- GRÁFICOS LINHA 1 ---
+
+# -------------------------------------------------------------------
+# GRÁFICOS: VERSÃO E TIPO
+# -------------------------------------------------------------------
+
 st.divider()
-st.subheader("📊 Análise por Versão")
+st.subheader("📊 Demandas por versão e tipo")
 
-col1, col2 = st.columns(2)
+col_1, col_2 = st.columns(2)
 
-with col1:
-    # Demandas por Versão
-    demandas_por_versao = df_filtered["versao"].value_counts().sort_index()
-    fig_versao = px.bar(
-        x=demandas_por_versao.index,
-        y=demandas_por_versao.values,
-        labels={"x": "Versão", "y": "Quantidade"},
-        title="Demandas por Versão",
-        color=demandas_por_versao.values,
-        color_continuous_scale="Viridis"
+with col_1:
+    demandas_por_versao = (
+        df_filtrado["versao"]
+        .value_counts()
+        .sort_index()
+        .reset_index()
     )
-    fig_versao.update_layout(showlegend=False, hovermode='x unified')
-    st.plotly_chart(fig_versao, use_container_width=True)
 
-with col2:
-    # Tipo de Demanda por Versão
-    tipo_versao = pd.crosstab(df_filtered["versao"], df_filtered["tipo"])
-    fig_tipo_versao = px.bar(
-        tipo_versao,
-        title="Tipo de Demanda por Versão",
-        barmode="stack",
-        labels={"value": "Quantidade", "index": "Versão"}
+    demandas_por_versao.columns = [
+        "versao",
+        "quantidade",
+    ]
+
+    figura_versao = px.bar(
+        demandas_por_versao,
+        x="versao",
+        y="quantidade",
+        title="Demandas por versão",
+        labels={
+            "versao": "Versão",
+            "quantidade": "Quantidade",
+        },
+        color="quantidade",
+        color_continuous_scale="Viridis",
     )
-    st.plotly_chart(fig_tipo_versao, use_container_width=True)
 
-# --- GRÁFICOS LINHA 2 ---
+    figura_versao.update_layout(
+        showlegend=False,
+    )
+
+    st.plotly_chart(
+        figura_versao,
+        use_container_width=True,
+    )
+
+with col_2:
+    demandas_por_tipo = (
+        df_filtrado["tipo"]
+        .value_counts()
+        .reset_index()
+    )
+
+    demandas_por_tipo.columns = [
+        "tipo",
+        "quantidade",
+    ]
+
+    figura_tipo = px.pie(
+        demandas_por_tipo,
+        names="tipo",
+        values="quantidade",
+        title="Distribuição por tipo de demanda",
+        hole=0.35,
+    )
+
+    st.plotly_chart(
+        figura_tipo,
+        use_container_width=True,
+    )
+
+
+# -------------------------------------------------------------------
+# GRÁFICOS: MÓDULO E MONTADORA
+# -------------------------------------------------------------------
+
 st.divider()
-st.subheader("🔧 Análise por Módulo")
+st.subheader("🔧 Demandas por módulo e montadora")
 
-col1, col2 = st.columns(2)
+col_1, col_2 = st.columns(2)
 
-with col1:
-    # Demandas por Módulo
-    demandas_por_modulo = df_filtered["modulo"].value_counts()
-    fig_modulo = px.pie(
-        values=demandas_por_modulo.values,
-        names=demandas_por_modulo.index,
-        title="Distribuição de Demandas por Módulo",
-        hole=0.3
+with col_1:
+    demandas_por_modulo = (
+        df_filtrado["modulo"]
+        .value_counts()
+        .reset_index()
     )
-    st.plotly_chart(fig_modulo, use_container_width=True)
 
-with col2:
-    # Modelos por Módulo
-    modelos_por_modulo = df_modelos["modulo"].value_counts()
-    fig_modelos_modulo = px.bar(
-        x=modelos_por_modulo.index,
-        y=modelos_por_modulo.values,
-        labels={"x": "Módulo", "y": "Quantidade"},
-        title="Modelos por Módulo",
-        color=modelos_por_modulo.values,
-        color_continuous_scale="Blues"
+    demandas_por_modulo.columns = [
+        "modulo",
+        "quantidade",
+    ]
+
+    figura_modulo = px.bar(
+        demandas_por_modulo,
+        x="modulo",
+        y="quantidade",
+        title="Demandas por módulo",
+        labels={
+            "modulo": "Módulo",
+            "quantidade": "Quantidade",
+        },
+        color="quantidade",
+        color_continuous_scale="Blues",
     )
-    fig_modelos_modulo.update_layout(showlegend=False)
-    st.plotly_chart(fig_modelos_modulo, use_container_width=True)
 
-# --- GRÁFICOS LINHA 3 ---
+    figura_modulo.update_layout(
+        showlegend=False,
+        xaxis_tickangle=-35,
+    )
+
+    st.plotly_chart(
+        figura_modulo,
+        use_container_width=True,
+    )
+
+with col_2:
+    demandas_por_montadora = (
+        df_filtrado["montadora"]
+        .value_counts()
+        .head(10)
+        .reset_index()
+    )
+
+    demandas_por_montadora.columns = [
+        "montadora",
+        "quantidade",
+    ]
+
+    figura_montadora = px.bar(
+        demandas_por_montadora,
+        x="quantidade",
+        y="montadora",
+        orientation="h",
+        title="Top 10 montadoras",
+        labels={
+            "montadora": "Montadora",
+            "quantidade": "Quantidade",
+        },
+        color="quantidade",
+        color_continuous_scale="Reds",
+    )
+
+    figura_montadora.update_layout(
+        showlegend=False,
+    )
+
+    st.plotly_chart(
+        figura_montadora,
+        use_container_width=True,
+    )
+
+
+# -------------------------------------------------------------------
+# GRÁFICO: MANUAIS
+# -------------------------------------------------------------------
+
 st.divider()
-st.subheader("📚 Análise de Manuais")
+st.subheader("📚 Manuais mais utilizados")
 
-col1, col2 = st.columns(2)
+top_manuais = (
+    df_filtrado["manual"]
+    .value_counts()
+    .head(10)
+    .reset_index()
+)
 
-with col1:
-    # Top 10 Manuais mais usados
-    top_manuais = df_filtered["manual"].value_counts().head(10)
-    fig_manuais = px.barh(
-        x=top_manuais.values,
-        y=top_manuais.index,
-        labels={"x": "Quantidade", "y": "Manual"},
-        title="Top 10 Manuais Mais Usados",
-        color=top_manuais.values,
-        color_continuous_scale="Greens"
-    )
-    fig_manuais.update_layout(showlegend=False)
-    st.plotly_chart(fig_manuais, use_container_width=True)
+top_manuais.columns = [
+    "manual",
+    "quantidade",
+]
 
-with col2:
-    # Capítulos por Manual
-    capitulos_por_manual = df_filtered["manual"].value_counts().head(10)
-    fig_cap_manual = px.bar(
-        x=capitulos_por_manual.index,
-        y=capitulos_por_manual.values,
-        labels={"x": "Manual", "y": "Capítulos"},
-        title="Capítulos por Manual (Top 10)",
-        color=capitulos_por_manual.values,
-        color_continuous_scale="Oranges"
-    )
-    fig_cap_manual.update_layout(xaxis_tickangle=-45, showlegend=False)
-    st.plotly_chart(fig_cap_manual, use_container_width=True)
+figura_manuais = px.bar(
+    top_manuais,
+    x="quantidade",
+    y="manual",
+    orientation="h",
+    title="Top 10 manuais",
+    labels={
+        "manual": "Manual",
+        "quantidade": "Quantidade",
+    },
+    color="quantidade",
+    color_continuous_scale="Greens",
+)
 
-# --- GRÁFICOS LINHA 4 ---
+figura_manuais.update_layout(
+    showlegend=False,
+)
+
+st.plotly_chart(
+    figura_manuais,
+    use_container_width=True,
+)
+
+
+# -------------------------------------------------------------------
+# HEATMAP
+# -------------------------------------------------------------------
+
 st.divider()
-st.subheader("🏭 Análise de Montadoras")
+st.subheader("🔥 Relação entre módulo e montadora")
 
-col1, col2 = st.columns(2)
+heatmap_data = pd.crosstab(
+    df_filtrado["modulo"],
+    df_filtrado["montadora"],
+)
 
-with col1:
-    # Top Montadoras
-    top_montadoras = df_filtered["montadora"].value_counts().head(10)
-    fig_montadoras = px.bar(
-        x=top_montadoras.index,
-        y=top_montadoras.values,
-        labels={"x": "Montadora", "y": "Quantidade"},
-        title="Top 10 Montadoras",
-        color=top_montadoras.values,
-        color_continuous_scale="Reds"
-    )
-    fig_montadoras.update_layout(xaxis_tickangle=-45, showlegend=False)
-    st.plotly_chart(fig_montadoras, use_container_width=True)
-
-with col2:
-    # Heatmap: Módulo vs Montadora
-    heatmap_data = pd.crosstab(df_filtered["modulo"], df_filtered["montadora"])
-    fig_heatmap = px.imshow(
+if not heatmap_data.empty:
+    figura_heatmap = px.imshow(
         heatmap_data,
-        labels=dict(x="Montadora", y="Módulo", color="Quantidade"),
-        title="Heatmap: Módulo vs Montadora",
-        color_continuous_scale="YlOrRd"
+        title="Demandas por módulo e montadora",
+        labels={
+            "x": "Montadora",
+            "y": "Módulo",
+            "color": "Quantidade",
+        },
+        color_continuous_scale="YlOrRd",
+        aspect="auto",
     )
-    st.plotly_chart(fig_heatmap, use_container_width=True)
 
-# --- TABELA DETALHADA ---
+    st.plotly_chart(
+        figura_heatmap,
+        use_container_width=True,
+    )
+else:
+    st.info("Não há dados suficientes para o heatmap.")
+
+
+# -------------------------------------------------------------------
+# ANÁLISE TEMPORAL
+# -------------------------------------------------------------------
+
 st.divider()
-st.subheader("📋 Detalhes das Demandas")
+st.subheader("📅 Evolução temporal")
 
-# Opções de visualização
-col1, col2 = st.columns([3, 1])
+df_temporal = df_filtrado.copy()
 
-with col1:
-    busca = st.text_input("🔍 Buscar em demandas filtradas").strip().lower()
+if "data_linkagem" in df_temporal.columns:
+    df_temporal["data_convertida"] = pd.to_datetime(
+        df_temporal["data_linkagem"],
+        errors="coerce",
+    )
 
-with col2:
-    limite = st.number_input("Linhas a exibir", min_value=5, max_value=100, value=20)
+    df_temporal = df_temporal.dropna(
+        subset=["data_convertida"]
+    )
 
-# Aplicar busca
-if busca:
-    df_display = df_filtered[
-        df_filtered.astype(str)
-        .apply(lambda x: x.str.contains(busca, case=False, regex=False, na=False))
+    if not df_temporal.empty:
+        quantidade_por_data = (
+            df_temporal
+            .groupby(
+                df_temporal["data_convertida"].dt.date
+            )
+            .size()
+            .reset_index(name="quantidade")
+        )
+
+        quantidade_por_data.columns = [
+            "data",
+            "quantidade",
+        ]
+
+        figura_tempo = px.line(
+            quantidade_por_data,
+            x="data",
+            y="quantidade",
+            markers=True,
+            title="Demandas ao longo do tempo",
+            labels={
+                "data": "Data",
+                "quantidade": "Demandas",
+            },
+        )
+
+        st.plotly_chart(
+            figura_tempo,
+            use_container_width=True,
+        )
+    else:
+        st.info(
+            "Não foi possível interpretar as datas cadastradas."
+        )
+
+
+# -------------------------------------------------------------------
+# TABELA DETALHADA
+# -------------------------------------------------------------------
+
+st.divider()
+st.subheader("📋 Detalhes das demandas")
+
+col_1, col_2 = st.columns([3, 1])
+
+with col_1:
+    termo = st.text_input(
+        "🔍 Buscar nos registros filtrados",
+        key="dashboard_busca_textual",
+    ).strip().lower()
+
+with col_2:
+    limite = st.number_input(
+        "Linhas a exibir",
+        min_value=5,
+        max_value=200,
+        value=20,
+        step=5,
+        key="dashboard_limite",
+    )
+
+
+if termo:
+    colunas_busca = [
+        coluna
+        for coluna in df_filtrado.columns
+        if coluna not in [
+            "id",
+            "created_at",
+            "updated_at",
+        ]
+    ]
+
+    df_exibicao = df_filtrado[
+        df_filtrado[colunas_busca]
+        .astype(str)
+        .apply(
+            lambda coluna: coluna.str.contains(
+                termo,
+                case=False,
+                regex=False,
+                na=False,
+            )
+        )
         .any(axis=1)
     ]
 else:
-    df_display = df_filtered
+    df_exibicao = df_filtrado.copy()
 
-# Exibir tabela
-st.dataframe(
-    df_display.head(limite),
-    use_container_width=True,
-    hide_index=True
+
+df_exibicao = remover_colunas_internas(
+    df_exibicao
 )
 
-st.write(f"**Total de registros exibidos:** {min(limite, len(df_display))} de {len(df_display)}")
+st.write(
+    f"**Registros encontrados:** {len(df_exibicao)}"
+)
 
-# --- EXPORTAR RELATÓRIO ---
+st.dataframe(
+    df_exibicao.head(int(limite)),
+    use_container_width=True,
+    hide_index=True,
+)
+
+st.caption(
+    f"Exibindo {min(int(limite), len(df_exibicao))} "
+    f"de {len(df_exibicao)} registro(s)."
+)
+
+
+# -------------------------------------------------------------------
+# EXPORTAÇÃO
+# -------------------------------------------------------------------
+
 st.divider()
-st.subheader("📥 Exportar Dados Filtrados")
+st.subheader("📥 Exportar dados filtrados")
 
-col1, col2 = st.columns(2)
+col_1, col_2 = st.columns(2)
 
-with col1:
-    csv = df_display.to_csv(index=False, encoding='utf-8-sig')
-    st.download_button(
-        "📥 Baixar CSV",
-        csv,
-        f"dashboard_filtrado_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        "text/csv"
+with col_1:
+    csv = df_exibicao.to_csv(
+        index=False,
+        encoding="utf-8-sig",
     )
 
-with col2:
-    import io
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        df_display.to_excel(writer, index=False, sheet_name='Demandas')
-    buffer.seek(0)
+    st.download_button(
+        "📥 Baixar CSV",
+        data=csv,
+        file_name=(
+            "dashboard_demandas_"
+            + datetime.now().strftime("%Y%m%d_%H%M%S")
+            + ".csv"
+        ),
+        mime="text/csv",
+        key="download_csv_dashboard",
+    )
+
+with col_2:
+    buffer_excel = io.BytesIO()
+
+    with pd.ExcelWriter(
+        buffer_excel,
+        engine="openpyxl",
+    ) as escritor:
+        df_exibicao.to_excel(
+            escritor,
+            index=False,
+            sheet_name="Demandas",
+        )
+
+    buffer_excel.seek(0)
+
     st.download_button(
         "📥 Baixar Excel",
-        buffer.getvalue(),
-        f"dashboard_filtrado_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        "application/vnd.ms-excel"
+        data=buffer_excel.getvalue(),
+        file_name=(
+            "dashboard_demandas_"
+            + datetime.now().strftime("%Y%m%d_%H%M%S")
+            + ".xlsx"
+        ),
+        mime=(
+            "application/vnd.openxmlformats-officedocument"
+            ".spreadsheetml.sheet"
+        ),
+        key="download_excel_dashboard",
     )

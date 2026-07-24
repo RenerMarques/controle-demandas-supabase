@@ -1,30 +1,72 @@
-import streamlit as st
-from supabase import create_client, Client
-import pandas as pd
 import logging
 from datetime import datetime
 
+import pandas as pd
+import streamlit as st
+from supabase import Client, create_client
+
+
 logger = logging.getLogger(__name__)
 
-# Credenciais do Supabase
+
 SUPABASE_URL = st.secrets.get("supabase_url")
 SUPABASE_KEY = st.secrets.get("supabase_key")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("❌ Credenciais do Supabase não configuradas em secrets.toml")
-    st.stop()
+
+def validar_configuracao():
+    """
+    Valida as credenciais e a URL antes de criar o cliente.
+    """
+    if not SUPABASE_URL:
+        st.error("❌ supabase_url não foi configurada.")
+        st.stop()
+
+    if not SUPABASE_KEY:
+        st.error("❌ supabase_key não foi configurada.")
+        st.stop()
+
+    url = str(SUPABASE_URL).strip().rstrip("/")
+
+    if "/rest/v1" in url:
+        st.error(
+            "❌ A supabase_url não deve conter '/rest/v1'. "
+            "Use somente a URL raiz do projeto."
+        )
+        st.stop()
+
+    if not url.startswith("https://"):
+        st.error(
+            "❌ A supabase_url deve começar com https://."
+        )
+        st.stop()
+
+    return url
+
+
+SUPABASE_URL = validar_configuracao()
+
 
 @st.cache_resource
-def conectar_supabase():
-    """Conecta ao Supabase."""
+def conectar_supabase() -> Client:
+    """
+    Cria e reutiliza a conexão com o Supabase.
+    """
     try:
-        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logger.info("Conectado ao Supabase com sucesso")
-        return supabase
-    except Exception as e:
-        st.error(f"❌ Erro ao conectar ao Supabase: {e}")
-        logger.error(f"Erro ao conectar ao Supabase: {e}", exc_info=True)
+        cliente = create_client(
+            SUPABASE_URL,
+            str(SUPABASE_KEY).strip(),
+        )
+
+        logger.info("Conexão com o Supabase criada.")
+        return cliente
+
+    except Exception:
+        logger.exception("Erro ao criar conexão com o Supabase.")
+        st.error(
+            "❌ Não foi possível criar a conexão com o Supabase."
+        )
         st.stop()
+
 
 supabase = conectar_supabase()
 
