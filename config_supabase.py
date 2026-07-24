@@ -150,7 +150,7 @@ def carregar_dados_demandas():
                 supabase
                 .table("demandas")
                 .select("*")
-                .order("data_insercao", desc=True)
+                .order("created_at", desc=True)
                 .order("id", desc=True)
                 .range(inicio, fim)
                 .execute()
