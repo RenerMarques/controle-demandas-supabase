@@ -17,15 +17,16 @@ from reportlab.platypus import (
 )
 
 from config_supabase import (
-    LISTA_MANUAIS,
-    LISTA_MODULOS,
-    LISTA_MONTADORAS,
-    LISTA_TIPOS,
-    LISTA_VERSOES,
-    atualizar_demanda,
     carregar_dados_demandas,
-    deletar_demanda,
     inserir_demanda,
+    inserir_demandas_lote,
+    atualizar_demanda,
+    deletar_demanda,
+    LISTA_TIPOS,
+    LISTA_MODULOS,
+    LISTA_MANUAIS,
+    LISTA_MONTADORAS,
+    LISTA_VERSOES,
 )
 
 
@@ -177,6 +178,309 @@ def validar_demanda(
 
     return True
 
+def normalizar_colunas_upload(df):
+    """
+    Converte os nomes das colunas antigas e novas
+    para o padrão utilizado no Supabase.
+    """
+    df = df.copy()
+
+    mapa_colunas = {
+        "DEMANDA": "demanda",
+        "TIPO DEMANDA": "tipo",
+        "TIPO": "tipo",
+        "MÓDULO": "modulo",
+        "MODULO": "modulo",
+        "MANUAL": "manual",
+        "DATA LINKAGEM": "data_linkagem",
+        "DATA_LINKAGEM": "data_linkagem",
+        "CAPITULO": "capitulo",
+        "CAPÍTULO": "capitulo",
+        "MONTADORA": "montadora",
+        "VERSÃO": "versao",
+        "VERSAO": "versao",
+        "demanda": "demanda",
+        "tipo": "tipo",
+        "modulo": "modulo",
+        "manual": "manual",
+        "data_linkagem": "data_linkagem",
+        "capitulo": "capitulo",
+        "montadora": "montadora",
+        "versao": "versao",
+    }
+
+    novas_colunas = {}
+
+    for coluna in df.columns:
+        nome_original = str(coluna).strip()
+        nome_padronizado = nome_original.upper()
+
+        if nome_original in mapa_colunas:
+            novas_colunas[coluna] = mapa_colunas[nome_original]
+        elif nome_padronizado in mapa_colunas:
+            novas_colunas[coluna] = mapa_colunas[nome_padronizado]
+        else:
+            novas_colunas[coluna] = nome_original.lower()
+
+    df = df.rename(columns=novas_colunas)
+
+    return df
+
+
+def normalizar_valor(valor):
+    """
+    Converte valores vazios, nulos e números para texto seguro.
+    """
+    if pd.isna(valor):
+        return ""
+
+    return str(valor).strip()
+
+
+def converter_data_upload(valor):
+    """
+    Converte datas do Excel para YYYY-MM-DD.
+
+    Aceita:
+    - DD/MM/YYYY
+    - YYYY-MM-DD
+    - objetos datetime do pandas
+    - objetos date
+    """
+    if valor is None or pd.isna(valor):
+        return ""
+
+    if hasattr(valor, "strftime"):
+        try:
+            return valor.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    valor = str(valor).strip()
+
+    formatos = [
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+        "%d/%m/%y",
+        "%Y/%m/%d",
+    ]
+
+    for formato in formatos:
+        try:
+            return datetime.strptime(
+                valor,
+                formato,
+            ).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    data_convertida = pd.to_datetime(
+        valor,
+        errors="coerce",
+        dayfirst=True,
+    )
+
+    if pd.isna(data_convertida):
+        return ""
+
+    return data_convertida.strftime("%Y-%m-%d")
+
+
+def validar_upload_demandas(df):
+    """
+    Valida e normaliza o DataFrame enviado pelo usuário.
+    """
+    colunas_obrigatorias = [
+        "demanda",
+        "tipo",
+        "modulo",
+        "manual",
+        "data_linkagem",
+        "capitulo",
+        "montadora",
+        "versao",
+    ]
+
+    if df is None or df.empty:
+        st.error("❌ O arquivo está vazio.")
+        return None
+
+    df = normalizar_colunas_upload(df)
+
+    colunas_faltantes = [
+        coluna
+        for coluna in colunas_obrigatorias
+        if coluna not in df.columns
+    ]
+
+    if colunas_faltantes:
+        st.error(
+            "❌ O arquivo não possui todas as colunas necessárias:\n\n"
+            + "\n".join(
+                f"- {coluna}"
+                for coluna in colunas_faltantes
+            )
+        )
+
+        st.info(
+            "Os nomes aceitos são: DEMANDA, TIPO DEMANDA, "
+            "MÓDULO, MANUAL, DATA LINKAGEM, CAPITULO, "
+            "MONTADORA e VERSÃO."
+        )
+
+        return None
+
+    df = df[colunas_obrigatorias].copy()
+
+    for coluna in colunas_obrigatorias:
+        if coluna == "data_linkagem":
+            df[coluna] = df[coluna].apply(
+                converter_data_upload
+            )
+        else:
+            df[coluna] = df[coluna].apply(
+                normalizar_valor
+            )
+
+    erros = []
+
+    campos_obrigatorios = [
+        "demanda",
+        "tipo",
+        "modulo",
+        "manual",
+        "capitulo",
+        "versao",
+    ]
+
+    for coluna in campos_obrigatorios:
+        quantidade_vazia = (
+            df[coluna].eq("").sum()
+        )
+
+        if quantidade_vazia > 0:
+            erros.append(
+                f"{coluna}: {quantidade_vazia} valor(es) vazio(s)"
+            )
+
+    if erros:
+        st.error(
+            "❌ Foram encontrados campos obrigatórios vazios:\n\n"
+            + "\n".join(f"- {erro}" for erro in erros)
+        )
+
+        return None
+
+    datas_invalidas = (
+        df["data_linkagem"].eq("")
+    )
+
+    if datas_invalidas.any():
+        st.error(
+            "❌ Existem datas vazias ou inválidas no arquivo."
+        )
+        return None
+
+    return df
+
+
+def preparar_registros_demandas(
+    df_upload,
+    df_existente,
+):
+    """
+    Prepara os registros para inserção.
+
+    Remove:
+    - duplicidades dentro do próprio arquivo;
+    - registros que já existem no Supabase.
+    """
+    colunas_chave = [
+        "demanda",
+        "tipo",
+        "modulo",
+        "manual",
+        "data_linkagem",
+        "capitulo",
+        "montadora",
+        "versao",
+    ]
+
+    df_novo = df_upload.copy()
+    df_atual = df_existente.copy()
+
+    for coluna in colunas_chave:
+        if coluna not in df_atual.columns:
+            df_atual[coluna] = ""
+
+        df_novo[coluna] = (
+            df_novo[coluna]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+        df_atual[coluna] = (
+            df_atual[coluna]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+    quantidade_original = len(df_novo)
+
+    # Remove duplicidades dentro do arquivo.
+    df_novo = df_novo.drop_duplicates(
+        subset=colunas_chave,
+        keep="first",
+    )
+
+    duplicados_no_arquivo = (
+        quantidade_original - len(df_novo)
+    )
+
+    # Cria chaves para comparação.
+    chaves_existentes = set(
+        df_atual[colunas_chave]
+        .astype(str)
+        .agg("|".join, axis=1)
+        .tolist()
+    )
+
+    df_novo["_chave_comparacao"] = (
+        df_novo[colunas_chave]
+        .astype(str)
+        .agg("|".join, axis=1)
+    )
+
+    ja_existentes = df_novo[
+        df_novo["_chave_comparacao"].isin(
+            chaves_existentes
+        )
+    ]
+
+    df_novo = df_novo[
+        ~df_novo["_chave_comparacao"].isin(
+            chaves_existentes
+        )
+    ]
+
+    duplicados_no_banco = len(ja_existentes)
+
+    df_novo = df_novo.drop(
+        columns=["_chave_comparacao"],
+        errors="ignore",
+    )
+
+    registros = df_novo.to_dict(
+        orient="records"
+    )
+
+    return (
+        registros,
+        duplicados_no_arquivo,
+        duplicados_no_banco,
+    )
 
 def carregar_demandas():
     """
@@ -404,85 +708,320 @@ tab_adicionar, tab_buscar, tab_editar, tab_excluir, tab_relatorios = st.tabs(
 with tab_adicionar:
     st.subheader("➕ Nova Demanda")
 
-    with st.form(
-        "form_adicionar_demanda",
-        clear_on_submit=True,
-    ):
-        coluna_1, coluna_2 = st.columns(2)
+    modo_adicao = st.radio(
+        "Método de cadastro:",
+        [
+            "Cadastro manual",
+            "Importação em lote",
+        ],
+        horizontal=True,
+        key="modo_adicao_demandas",
+    )
 
-        with coluna_1:
-            demanda = st.text_input("Demanda").strip()
+    # ===============================================================
+    # CADASTRO MANUAL
+    # ===============================================================
 
-            tipo = st.selectbox(
-                "Tipo",
-                LISTA_TIPOS,
-            )
-
-            modulo = st.selectbox(
-                "Módulo",
-                LISTA_MODULOS,
-            )
-
-            manual = st.selectbox(
-                "Manual",
-                LISTA_MANUAIS,
-            )
-
-        with coluna_2:
-            data_obj = st.date_input(
-                "Data de linkagem",
-                value=date.today(),
-            )
-
-            capitulo = st.text_input(
-                "Capítulo"
-            ).strip()
-
-            montadora = st.selectbox(
-                "Montadora",
-                LISTA_MONTADORAS,
-            )
-
-            versao = st.selectbox(
-                "Versão",
-                LISTA_VERSOES,
-            )
-
-        salvar = st.form_submit_button(
-            "💾 Salvar demanda"
-        )
-
-    if salvar:
-        data_linkagem = formatar_data_supabase(data_obj)
-
-        if validar_demanda(
-            demanda,
-            tipo,
-            modulo,
-            manual,
-            data_linkagem,
-            capitulo,
-            montadora,
-            versao,
+    if modo_adicao == "Cadastro manual":
+        with st.form(
+            "form_adicionar_demanda",
+            clear_on_submit=True,
         ):
-            with st.spinner("Salvando demanda..."):
-                sucesso, mensagem = inserir_demanda(
-                    demanda,
-                    tipo,
-                    modulo,
-                    manual,
-                    data_linkagem,
-                    capitulo,
-                    montadora,
-                    versao,
+            coluna_1, coluna_2 = st.columns(2)
+
+            with coluna_1:
+                demanda = st.text_input(
+                    "Demanda"
+                ).strip()
+
+                tipo = st.selectbox(
+                    "Tipo",
+                    LISTA_TIPOS,
                 )
 
-            if sucesso:
-                st.success(mensagem)
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error(mensagem)
+                modulo = st.selectbox(
+                    "Módulo",
+                    LISTA_MODULOS,
+                )
+
+                manual = st.selectbox(
+                    "Manual",
+                    LISTA_MANUAIS,
+                )
+
+            with coluna_2:
+                data_obj = st.date_input(
+                    "Data de linkagem",
+                    value=date.today(),
+                )
+
+                capitulo = st.text_input(
+                    "Capítulo"
+                ).strip()
+
+                montadora = st.selectbox(
+                    "Montadora",
+                    LISTA_MONTADORAS,
+                )
+
+                versao = st.selectbox(
+                    "Versão",
+                    LISTA_VERSOES,
+                )
+
+            salvar = st.form_submit_button(
+                "💾 Salvar demanda"
+            )
+
+        if salvar:
+            data_linkagem = formatar_data_supabase(
+                data_obj
+            )
+
+            if validar_demanda(
+                demanda,
+                tipo,
+                modulo,
+                manual,
+                data_linkagem,
+                capitulo,
+                montadora,
+                versao,
+            ):
+                with st.spinner("Salvando demanda..."):
+                    sucesso, mensagem = inserir_demanda(
+                        demanda,
+                        tipo,
+                        modulo,
+                        manual,
+                        data_linkagem,
+                        capitulo,
+                        montadora,
+                        versao,
+                    )
+
+                if sucesso:
+                    st.success(mensagem)
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(mensagem)
+
+    # ===============================================================
+    # IMPORTAÇÃO EM LOTE
+    # ===============================================================
+
+    else:
+        st.info(
+            "Envie um arquivo Excel ou CSV contendo as demandas."
+        )
+
+        st.markdown(
+            """
+            **Colunas aceitas:**
+
+            `DEMANDA`, `TIPO DEMANDA`, `MÓDULO`, `MANUAL`,
+            `DATA LINKAGEM`, `CAPITULO`, `MONTADORA`, `VERSÃO`
+
+            Também são aceitos os nomes em minúsculo:
+
+            `demanda`, `tipo`, `modulo`, `manual`,
+            `data_linkagem`, `capitulo`, `montadora`, `versao`
+            """
+        )
+
+        arquivo = st.file_uploader(
+            "Selecione o arquivo",
+            type=["xlsx", "csv"],
+            key="upload_demandas_lote",
+        )
+
+        if arquivo is not None:
+            try:
+                with st.spinner("Lendo arquivo..."):
+                    nome_arquivo = arquivo.name.lower()
+
+                    if nome_arquivo.endswith(".csv"):
+                        df_original = pd.read_csv(
+                            arquivo,
+                            sep=None,
+                            engine="python",
+                        )
+                    else:
+                        df_original = pd.read_excel(
+                            arquivo
+                        )
+
+                df_upload = validar_upload_demandas(
+                    df_original
+                )
+
+            except Exception:
+                logger.exception(
+                    "Erro ao ler arquivo de demandas"
+                )
+
+                st.error(
+                    "❌ Não foi possível ler o arquivo."
+                )
+
+                df_upload = None
+
+            if df_upload is not None:
+                st.success(
+                    f"✅ Arquivo validado: "
+                    f"{len(df_upload)} linha(s)."
+                )
+
+                st.subheader("👁️ Pré-visualização")
+
+                st.dataframe(
+                    df_upload.head(20),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                verificar = st.button(
+                    "🔎 Verificar duplicidades",
+                    key="verificar_duplicidades_demandas",
+                )
+
+                if verificar:
+                    with st.spinner(
+                        "Comparando com os registros existentes..."
+                    ):
+                        df_existente = (
+                            carregar_dados_demandas()
+                        )
+
+                        (
+                            registros,
+                            duplicados_arquivo,
+                            duplicados_banco,
+                        ) = preparar_registros_demandas(
+                            df_upload,
+                            df_existente,
+                        )
+
+                    st.session_state[
+                        "registros_demandas_lote"
+                    ] = registros
+
+                    st.session_state[
+                        "duplicados_arquivo_demandas"
+                    ] = duplicados_arquivo
+
+                    st.session_state[
+                        "duplicados_banco_demandas"
+                    ] = duplicados_banco
+
+                if (
+                    "registros_demandas_lote"
+                    in st.session_state
+                ):
+                    registros = st.session_state[
+                        "registros_demandas_lote"
+                    ]
+
+                    duplicados_arquivo = (
+                        st.session_state.get(
+                            "duplicados_arquivo_demandas",
+                            0,
+                        )
+                    )
+
+                    duplicados_banco = (
+                        st.session_state.get(
+                            "duplicados_banco_demandas",
+                            0,
+                        )
+                    )
+
+                    st.divider()
+
+                    col_1, col_2, col_3 = st.columns(3)
+
+                    with col_1:
+                        st.metric(
+                            "Linhas no arquivo",
+                            len(df_upload),
+                        )
+
+                    with col_2:
+                        st.metric(
+                            "Duplicadas no arquivo",
+                            duplicados_arquivo,
+                        )
+
+                    with col_3:
+                        st.metric(
+                            "Já existentes no banco",
+                            duplicados_banco,
+                        )
+
+                    st.write(
+                        f"**Novos registros para inserir:** "
+                        f"{len(registros)}"
+                    )
+
+                    if not registros:
+                        st.warning(
+                            "⚠️ Nenhum novo registro para importar."
+                        )
+                    else:
+                        confirmar = st.checkbox(
+                            "Confirmo a importação dos "
+                            "novos registros.",
+                            key="confirmar_importacao_demandas",
+                        )
+
+                        importar = st.button(
+                            "🚀 Importar demandas",
+                            type="primary",
+                            key="importar_demandas_lote",
+                        )
+
+                        if importar:
+                            if not confirmar:
+                                st.error(
+                                    "❌ Confirme a importação antes "
+                                    "de continuar."
+                                )
+                            else:
+                                with st.spinner(
+                                    "Importando demandas em lotes..."
+                                ):
+                                    (
+                                        sucesso,
+                                        mensagem,
+                                        total_inserido,
+                                        total_erros,
+                                    ) = inserir_demandas_lote(
+                                        registros
+                                    )
+
+                                if sucesso:
+                                    st.success(mensagem)
+                                else:
+                                    st.warning(mensagem)
+
+                                st.session_state.pop(
+                                    "registros_demandas_lote",
+                                    None,
+                                )
+
+                                st.session_state.pop(
+                                    "duplicados_arquivo_demandas",
+                                    None,
+                                )
+
+                                st.session_state.pop(
+                                    "duplicados_banco_demandas",
+                                    None,
+                                )
+
+                                st.cache_data.clear()
+                                st.rerun()
 
     st.divider()
     st.subheader("📋 Demandas cadastradas")
@@ -497,8 +1036,6 @@ with tab_adicionar:
             use_container_width=True,
             hide_index=True,
         )
-
-
 # -------------------------------------------------------------------
 # ABA BUSCAR
 # -------------------------------------------------------------------

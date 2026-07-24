@@ -221,6 +221,111 @@ def inserir_demanda(demanda, tipo, modulo, manual, data_linkagem, capitulo, mont
         logger.error(f"Erro ao inserir demanda: {e}")
         return False, f"❌ Erro ao salvar: {str(e)}"
 
+def inserir_demandas_lote(registros, tamanho_lote=500):
+    """
+    Insere várias demandas no Supabase em lotes.
+
+    Parâmetros:
+        registros: lista de dicionários com as colunas da tabela demandas
+        tamanho_lote: quantidade de registros por requisição
+
+    Retorno:
+        tuple:
+            sucesso: bool
+            mensagem: str
+            total_inserido: int
+            total_erros: int
+    """
+    if not registros:
+        return (
+            False,
+            "❌ Nenhum registro foi enviado para importação.",
+            0,
+            0,
+        )
+
+    total_inserido = 0
+    total_erros = 0
+    mensagens_erro = []
+
+    try:
+        for inicio in range(0, len(registros), tamanho_lote):
+            fim = inicio + tamanho_lote
+            lote = registros[inicio:fim]
+
+            try:
+                resposta = (
+                    supabase
+                    .table("demandas")
+                    .insert(lote)
+                    .execute()
+                )
+
+                registros_inseridos = resposta.data or []
+
+                total_inserido += len(registros_inseridos)
+
+                logger.info(
+                    "Lote inserido: %d até %d. "
+                    "Registros inseridos: %d",
+                    inicio + 1,
+                    min(fim, len(registros)),
+                    len(registros_inseridos),
+                )
+
+            except Exception as erro_lote:
+                total_erros += len(lote)
+
+                mensagem_erro = (
+                    f"Lote {inicio + 1}-{min(fim, len(registros))}: "
+                    f"{str(erro_lote)}"
+                )
+
+                mensagens_erro.append(mensagem_erro)
+
+                logger.exception(
+                    "Erro ao inserir lote de demandas: %s",
+                    mensagem_erro,
+                )
+
+        st.cache_data.clear()
+
+        if total_erros == 0:
+            return (
+                True,
+                f"✅ {total_inserido} demanda(s) importada(s) com sucesso.",
+                total_inserido,
+                total_erros,
+            )
+
+        mensagem = (
+            f"⚠️ Importação parcialmente concluída. "
+            f"Inseridos: {total_inserido}. "
+            f"Com erro: {total_erros}."
+        )
+
+        if mensagens_erro:
+            mensagem += "\n\n" + "\n".join(mensagens_erro[:3])
+
+        return (
+            total_inserido > 0,
+            mensagem,
+            total_inserido,
+            total_erros,
+        )
+
+    except Exception as erro:
+        logger.exception(
+            "Erro geral na importação em lote de demandas"
+        )
+
+        return (
+            False,
+            "❌ Erro geral durante a importação.",
+            total_inserido,
+            len(registros) - total_inserido,
+        )
+
 def inserir_modelo(modulo, manual, capitulo, montadora, modelo):
     """Insere novo modelo."""
     try:
