@@ -1,17 +1,12 @@
-import logging
-
 import streamlit as st
 
 from config_supabase import (
-    LISTA_MANUAIS,
-    atualizar_capitulo,
     carregar_dados_capitulos,
-    deletar_capitulo,
     inserir_capitulo,
+    atualizar_capitulo,
+    deletar_capitulo,
+    LISTA_MANUAIS,
 )
-
-
-logger = logging.getLogger(__name__)
 
 
 st.set_page_config(
@@ -20,115 +15,55 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("📚 Capítulos - Controle de Sobras")
+st.title("📚 Controle de Capítulos")
 
 
-# -------------------------------------------------------------------
-# FUNÇÕES AUXILIARES
-# -------------------------------------------------------------------
-
-def validar_capitulo(manual, capitulo, usado_na_demanda):
-    """
-    Valida os campos obrigatórios.
-    """
-    erros = []
-
-    if not str(manual).strip():
-        erros.append("Manual é obrigatório.")
-
-    if not str(capitulo).strip():
-        erros.append("Capítulo é obrigatório.")
-
-    if erros:
-        st.error(
-            "❌ Corrija os seguintes problemas:\n\n"
-            + "\n".join(f"- {erro}" for erro in erros)
-        )
-        return False
-
-    return True
+def indice_seguro(lista, valor):
+    try:
+        return lista.index(valor)
+    except ValueError:
+        return 0
 
 
-def obter_opcoes(df):
-    """
-    Cria opções de seleção contendo o ID do registro.
-    """
-    opcoes = []
-
-    for _, registro in df.iterrows():
-        opcoes.append(
-            f"{registro['id']} - "
-            f"{registro.get('capitulo', '')} - "
-            f"{registro.get('manual', '')}"
-        )
-
-    return opcoes
-
-
-def obter_id(opcao):
-    """
-    Extrai o ID do registro selecionado.
-    """
-    return int(str(opcao).split(" - ", 1)[0])
-
-
-# -------------------------------------------------------------------
-# ABAS
-# -------------------------------------------------------------------
-
-tab_cadastrar, tab_editar = st.tabs(
+tab_adicionar, tab_editar = st.tabs(
     [
-        "➕ Cadastrar e listar",
-        "📝 Editar e excluir",
+        "➕ Adicionar",
+        "📝 Editar / Excluir",
     ]
 )
 
 
-# -------------------------------------------------------------------
-# ABA CADASTRAR
-# -------------------------------------------------------------------
-
-with tab_cadastrar:
-    st.subheader("➕ Novo capítulo")
-
+with tab_adicionar:
     with st.form(
-        "form_adicionar_capitulo",
+        "form_capitulo",
         clear_on_submit=True,
     ):
-        coluna_1, coluna_2, coluna_3 = st.columns(3)
+        manual = st.selectbox(
+            "Manual",
+            LISTA_MANUAIS,
+        )
 
-        with coluna_1:
-            manual = st.selectbox(
-                "Manual",
-                LISTA_MANUAIS,
-            )
+        capitulo = st.text_input(
+            "Capítulo"
+        )
 
-        with coluna_2:
-            capitulo = st.text_input(
-                "Capítulo",
-            ).strip()
-
-        with coluna_3:
-            usado_na_demanda = st.text_input(
-                "Usado na demanda",
-            ).strip()
+        usado_na_demanda = st.text_input(
+            "Usado na demanda"
+        )
 
         salvar = st.form_submit_button(
             "💾 Salvar capítulo"
         )
 
     if salvar:
-        if validar_capitulo(
-            manual,
-            capitulo,
-            usado_na_demanda,
-        ):
-            with st.spinner("Salvando capítulo..."):
-                sucesso, mensagem = inserir_capitulo(
-                    manual,
-                    capitulo,
-                    usado_na_demanda,
-                )
+        if not capitulo.strip():
+            st.error("❌ O capítulo é obrigatório.")
+        else:
+            sucesso, mensagem = inserir_capitulo(
+                manual,
+                capitulo,
+                usado_na_demanda,
+            )
 
             if sucesso:
                 st.success(mensagem)
@@ -136,156 +71,100 @@ with tab_cadastrar:
             else:
                 st.error(mensagem)
 
-    st.divider()
-    st.subheader("📋 Capítulos cadastrados")
+    df = carregar_dados_capitulos()
 
-    try:
-        df_capitulos = carregar_dados_capitulos()
-    except Exception:
-        logger.exception("Erro ao carregar capítulos")
-        st.error("❌ Não foi possível carregar os capítulos.")
-        df_capitulos = None
-
-    if df_capitulos is None:
-        st.stop()
-
-    if df_capitulos.empty:
-        st.info("Nenhum capítulo cadastrado.")
-    else:
-        termo = st.text_input(
-            "🔍 Buscar capítulo ou manual",
-        ).strip().lower()
-
-        if termo:
-            resultado = df_capitulos[
-                df_capitulos.astype(str)
-                .apply(
-                    lambda coluna: coluna.str.contains(
-                        termo,
-                        case=False,
-                        regex=False,
-                        na=False,
-                    )
-                )
-                .any(axis=1)
-            ]
-        else:
-            resultado = df_capitulos
-
-        st.write(
-            f"**Registros encontrados:** {len(resultado)}"
-        )
-
+    if not df.empty:
         st.dataframe(
-            resultado,
+            df,
             use_container_width=True,
             hide_index=True,
         )
 
 
-# -------------------------------------------------------------------
-# ABA EDITAR E EXCLUIR
-# -------------------------------------------------------------------
-
 with tab_editar:
-    st.subheader("📝 Editar ou excluir capítulo")
+    df = carregar_dados_capitulos()
 
-    df_capitulos = carregar_dados_capitulos()
-
-    if df_capitulos.empty:
+    if df.empty:
         st.info("Nenhum capítulo cadastrado.")
     else:
-        opcoes = obter_opcoes(df_capitulos)
+        opcoes = [
+            f"{linha['id']} | {linha['capitulo']}"
+            for _, linha in df.iterrows()
+        ]
 
-        opcao = st.selectbox(
-            "Selecione o capítulo:",
-            [""] + opcoes,
-            key="capitulo_selecionado",
+        escolhido = st.selectbox(
+            "Selecione o capítulo",
+            opcoes,
         )
 
-        if opcao:
-            id_capitulo = obter_id(opcao)
+        id_capitulo = int(
+            escolhido.split("|", 1)[0].strip()
+        )
 
-            registro = df_capitulos[
-                df_capitulos["id"] == id_capitulo
-            ].iloc[0]
+        registro = df[
+            df["id"] == id_capitulo
+        ].iloc[0]
 
-            manual_atual = registro.get("manual", "")
-            capitulo_atual = registro.get("capitulo", "")
-            demanda_atual = registro.get("usado_na_demanda", "")
-
-            with st.form("form_editar_capitulo"):
-                novo_manual = st.selectbox(
-                    "Manual",
+        with st.form("form_editar_capitulo"):
+            novo_manual = st.selectbox(
+                "Manual",
+                LISTA_MANUAIS,
+                index=indice_seguro(
                     LISTA_MANUAIS,
-                    index=(
-                        LISTA_MANUAIS.index(manual_atual)
-                        if manual_atual in LISTA_MANUAIS
-                        else 0
-                    ),
-                )
-
-                novo_capitulo = st.text_input(
-                    "Capítulo",
-                    value=str(capitulo_atual),
-                ).strip()
-
-                nova_demanda = st.text_input(
-                    "Usado na demanda",
-                    value=str(demanda_atual),
-                ).strip()
-
-                atualizar = st.form_submit_button(
-                    "💾 Atualizar capítulo"
-                )
-
-            if atualizar:
-                if validar_capitulo(
-                    novo_manual,
-                    novo_capitulo,
-                    nova_demanda,
-                ):
-                    with st.spinner("Atualizando capítulo..."):
-                        sucesso, mensagem = atualizar_capitulo(
-                            id_capitulo,
-                            novo_manual,
-                            novo_capitulo,
-                            nova_demanda,
-                        )
-
-                    if sucesso:
-                        st.success(mensagem)
-                        st.rerun()
-                    else:
-                        st.error(mensagem)
-
-            st.divider()
-
-            st.warning(
-                f"Registro selecionado: **{capitulo_atual}**"
+                    registro["manual"],
+                ),
             )
 
-            confirmar = st.checkbox(
-                "Confirmo a exclusão permanente.",
-                key="confirmar_exclusao_capitulo",
+            novo_capitulo = st.text_input(
+                "Capítulo",
+                value=str(registro["capitulo"]),
             )
 
-            if st.button(
-                "🗑️ Excluir capítulo",
-                type="primary",
-            ):
-                if not confirmar:
-                    st.error(
-                        "❌ Confirme a exclusão antes de continuar."
-                    )
+            novo_usado = st.text_input(
+                "Usado na demanda",
+                value=str(
+                    registro["usado_na_demanda"]
+                ),
+            )
+
+            atualizar = st.form_submit_button(
+                "💾 Atualizar"
+            )
+
+        if atualizar:
+            sucesso, mensagem = atualizar_capitulo(
+                id_capitulo,
+                novo_manual,
+                novo_capitulo,
+                novo_usado,
+            )
+
+            if sucesso:
+                st.success(mensagem)
+                st.rerun()
+            else:
+                st.error(mensagem)
+
+        st.divider()
+
+        confirmar = st.checkbox(
+            "Confirmo a exclusão.",
+            key="confirmar_exclusao_capitulo",
+        )
+
+        if st.button(
+            "🗑️ Excluir capítulo",
+            type="primary",
+        ):
+            if not confirmar:
+                st.error("❌ Confirme a exclusão.")
+            else:
+                sucesso, mensagem = deletar_capitulo(
+                    id_capitulo
+                )
+
+                if sucesso:
+                    st.success(mensagem)
+                    st.rerun()
                 else:
-                    with st.spinner("Excluindo capítulo..."):
-                        sucesso, mensagem = deletar_capitulo(
-                            id_capitulo
-                        )
-
-                    if sucesso:
-                        st.success(mensagem)
-                        st.rerun()
-                    else:
-                        st.error(mensagem)
+                    st.error(mensagem)

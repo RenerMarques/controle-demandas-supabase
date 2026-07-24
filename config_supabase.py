@@ -9,410 +9,162 @@ from supabase import Client, create_client
 logger = logging.getLogger(__name__)
 
 
+# ================================================================
+# CONEXÃO
+# ================================================================
+
 SUPABASE_URL = st.secrets.get("supabase_url")
 SUPABASE_KEY = st.secrets.get("supabase_key")
 
-
-def validar_configuracao():
-    """
-    Valida as credenciais e a URL antes de criar o cliente.
-    """
-    if not SUPABASE_URL:
-        st.error("❌ supabase_url não foi configurada.")
-        st.stop()
-
-    if not SUPABASE_KEY:
-        st.error("❌ supabase_key não foi configurada.")
-        st.stop()
-
-    url = str(SUPABASE_URL).strip().rstrip("/")
-
-    if "/rest/v1" in url:
-        st.error(
-            "❌ A supabase_url não deve conter '/rest/v1'. "
-            "Use somente a URL raiz do projeto."
-        )
-        st.stop()
-
-    if not url.startswith("https://"):
-        st.error(
-            "❌ A supabase_url deve começar com https://."
-        )
-        st.stop()
-
-    return url
-
-
-SUPABASE_URL = validar_configuracao()
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error(
+        "❌ Configure supabase_url e supabase_key "
+        "nos secrets do Streamlit."
+    )
+    st.stop()
 
 
 @st.cache_resource
 def conectar_supabase() -> Client:
-    """
-    Cria e reutiliza a conexão com o Supabase.
-    """
     try:
-        cliente = create_client(
+        return create_client(
             SUPABASE_URL,
-            str(SUPABASE_KEY).strip(),
+            SUPABASE_KEY,
         )
-
-        logger.info("Conexão com o Supabase criada.")
-        return cliente
-
-    except Exception:
-        logger.exception("Erro ao criar conexão com o Supabase.")
-        st.error(
-            "❌ Não foi possível criar a conexão com o Supabase."
-        )
+    except Exception as erro:
+        logger.exception("Erro ao conectar ao Supabase")
+        st.error(f"❌ Erro ao conectar ao Supabase: {erro}")
         st.stop()
 
 
 supabase = conectar_supabase()
 
-# --- FUNÇÕES DE CARREGAMENTO ---
 
-# --- FUNÇÕES DE CARREGAMENTO ---
+# ================================================================
+# FUNÇÕES AUXILIARES
+# ================================================================
+
+def limpar_texto(valor):
+    if valor is None:
+        return ""
+
+    try:
+        if pd.isna(valor):
+            return ""
+    except (TypeError, ValueError):
+        pass
+
+    return str(valor).strip()
+
+
+def invalidar_cache():
+    st.cache_data.clear()
+
 
 def _carregar_todos_registros(
-    nome_tabela,
+    tabela,
     tamanho_pagina=1000,
 ):
     """
-    Carrega todos os registros de uma tabela usando paginação.
+    Carrega todos os registros da tabela usando paginação.
 
-    O Supabase/PostgREST limita consultas grandes. Por isso,
-    os registros são buscados em blocos de até 1.000 linhas.
+    Demandas:
+        created_at DESC
+        ordem_origem DESC
+        id DESC
+
+    Outras tabelas:
+        created_at DESC
+        id DESC
     """
-    todos_os_registros = []
+    registros_finais = []
     inicio = 0
 
     while True:
         fim = inicio + tamanho_pagina - 1
 
-        resposta = (
+        consulta = (
             supabase
-            .table(nome_tabela)
+            .table(tabela)
             .select("*")
-            .order("id")
+        )
+
+        if tabela == "demandas":
+            consulta = (
+                consulta
+                .order("created_at", desc=True)
+                .order("ordem_origem", desc=True)
+                .order("id", desc=True)
+            )
+        else:
+            consulta = (
+                consulta
+                .order("created_at", desc=True)
+                .order("id", desc=True)
+            )
+
+        resposta = (
+            consulta
             .range(inicio, fim)
             .execute()
         )
 
-        registros = resposta.data or []
+        pagina = resposta.data or []
 
-        if not registros:
+        if not pagina:
             break
 
-        todos_os_registros.extend(registros)
+        registros_finais.extend(pagina)
 
-        logger.info(
-            "Tabela '%s': página carregada com %d registro(s). "
-            "Total parcial: %d",
-            nome_tabela,
-            len(registros),
-            len(todos_os_registros),
-        )
-
-        # Se vieram menos registros que o limite da página,
-        # chegamos ao final da tabela.
-        if len(registros) < tamanho_pagina:
+        if len(pagina) < tamanho_pagina:
             break
 
         inicio += tamanho_pagina
 
-    logger.info(
-        "Tabela '%s': total carregado: %d registro(s)",
-        nome_tabela,
-        len(todos_os_registros),
-    )
+    return pd.DataFrame(registros_finais)
 
-    return pd.DataFrame(todos_os_registros)
 
+# ================================================================
+# CARREGAMENTO
+# ================================================================
 
 @st.cache_data(ttl=600)
 def carregar_dados_demandas():
-    """
-    Carrega todas as demandas usando paginação.
-
-    Ordem:
-    1. created_at DESC
-    2. ordem_origem DESC
-    3. id DESC
-    """
-    todos_registros = []
-    inicio = 0
-    tamanho_pagina = 1000
-
     try:
-        while True:
-            fim = inicio + tamanho_pagina - 1
-
-            resposta = (
-                supabase
-                .table("demandas")
-                .select("*")
-                .order("created_at", desc=True)
-                .order("ordem_origem", desc=True)
-                .order("id", desc=True)
-                .range(inicio, fim)
-                .execute()
-            )
-
-            registros = resposta.data or []
-
-            if not registros:
-                break
-
-            todos_registros.extend(registros)
-
-            logger.info(
-                "Página carregada: %d registros. "
-                "Total parcial: %d",
-                len(registros),
-                len(todos_registros),
-            )
-
-            if len(registros) < tamanho_pagina:
-                break
-
-            inicio += tamanho_pagina
-
-        df = pd.DataFrame(todos_registros)
-
-        logger.info(
-            "Total de demandas carregadas: %d",
-            len(df),
-        )
-
-        return df
-
+        return _carregar_todos_registros("demandas")
     except Exception as erro:
-        logger.exception(
-            "Erro ao carregar demandas"
-        )
-
-        st.error(
-            f"❌ Erro ao carregar demandas: {erro}"
-        )
-
+        logger.exception("Erro ao carregar demandas")
+        st.error(f"❌ Erro ao carregar demandas: {erro}")
         return pd.DataFrame()
+
 
 @st.cache_data(ttl=600)
 def carregar_dados_modelos():
-    """
-    Carrega todos os modelos do Supabase.
-    """
     try:
-        df = _carregar_todos_registros("modelos")
-
-        logger.info(
-            "Modelos carregados: %d registro(s)",
-            len(df),
-        )
-
-        return df
-
-    except Exception:
+        return _carregar_todos_registros("modelos")
+    except Exception as erro:
         logger.exception("Erro ao carregar modelos")
-        st.error(
-            "❌ Não foi possível carregar os modelos."
-        )
+        st.error(f"❌ Erro ao carregar modelos: {erro}")
         return pd.DataFrame()
 
 
 @st.cache_data(ttl=600)
 def carregar_dados_capitulos():
-    """
-    Carrega todos os capítulos do Supabase.
-    """
     try:
-        df = _carregar_todos_registros("capitulos")
-
-        logger.info(
-            "Capítulos carregados: %d registro(s)",
-            len(df),
-        )
-
-        return df
-
-    except Exception:
+        return _carregar_todos_registros("capitulos")
+    except Exception as erro:
         logger.exception("Erro ao carregar capítulos")
-        st.error(
-            "❌ Não foi possível carregar os capítulos."
-        )
+        st.error(f"❌ Erro ao carregar capítulos: {erro}")
         return pd.DataFrame()
 
-# --- FUNÇÕES DE INSERÇÃO ---
 
-def inserir_demanda(
-    demanda,
-    tipo,
-    modulo,
-    manual,
-    data_linkagem,
-    capitulo,
-    montadora,
-    versao,
-):
-    """
-    Insere uma demanda.
-
-    created_at será preenchido automaticamente pelo banco.
-    ordem_origem será o próximo número da sequência.
-    """
-    try:
-        proxima_ordem = obter_proxima_ordem_demanda()
-
-        dados = {
-            "demanda": str(demanda).strip(),
-            "tipo": str(tipo).strip(),
-            "modulo": str(modulo).strip(),
-            "manual": str(manual).strip(),
-            "data_linkagem": data_linkagem,
-            "capitulo": str(capitulo).strip(),
-            "montadora": str(montadora).strip(),
-            "versao": str(versao).strip(),
-            "ordem_origem": proxima_ordem,
-        }
-
-        (
-            supabase
-            .table("demandas")
-            .insert(dados)
-            .execute()
-        )
-
-        st.cache_data.clear()
-
-        logger.info(
-            "Demanda inserida. ordem_origem=%d",
-            proxima_ordem,
-        )
-
-        return (
-            True,
-            "✅ Demanda salva com sucesso!",
-        )
-
-    except Exception as erro:
-        logger.exception(
-            "Erro ao inserir demanda"
-        )
-
-        return (
-            False,
-            f"❌ Erro ao salvar: {erro}",
-        )
-
-def inserir_demandas_lote(registros, tamanho_lote=500):
-    """
-    Insere várias demandas no Supabase em lotes.
-
-    Parâmetros:
-        registros: lista de dicionários com as colunas da tabela demandas
-        tamanho_lote: quantidade de registros por requisição
-
-    Retorno:
-        tuple:
-            sucesso: bool
-            mensagem: str
-            total_inserido: int
-            total_erros: int
-    """
-    if not registros:
-        return (
-            False,
-            "❌ Nenhum registro foi enviado para importação.",
-            0,
-            0,
-        )
-
-    total_inserido = 0
-    total_erros = 0
-    mensagens_erro = []
-
-    try:
-        for inicio in range(0, len(registros), tamanho_lote):
-            fim = inicio + tamanho_lote
-            lote = registros[inicio:fim]
-
-            try:
-                resposta = (
-                    supabase
-                    .table("demandas")
-                    .insert(lote)
-                    .execute()
-                )
-
-                registros_inseridos = resposta.data or []
-
-                total_inserido += len(registros_inseridos)
-
-                logger.info(
-                    "Lote inserido: %d até %d. "
-                    "Registros inseridos: %d",
-                    inicio + 1,
-                    min(fim, len(registros)),
-                    len(registros_inseridos),
-                )
-
-            except Exception as erro_lote:
-                total_erros += len(lote)
-
-                mensagem_erro = (
-                    f"Lote {inicio + 1}-{min(fim, len(registros))}: "
-                    f"{str(erro_lote)}"
-                )
-
-                mensagens_erro.append(mensagem_erro)
-
-                logger.exception(
-                    "Erro ao inserir lote de demandas: %s",
-                    mensagem_erro,
-                )
-
-        st.cache_data.clear()
-
-        if total_erros == 0:
-            return (
-                True,
-                f"✅ {total_inserido} demanda(s) importada(s) com sucesso.",
-                total_inserido,
-                total_erros,
-            )
-
-        mensagem = (
-            f"⚠️ Importação parcialmente concluída. "
-            f"Inseridos: {total_inserido}. "
-            f"Com erro: {total_erros}."
-        )
-
-        if mensagens_erro:
-            mensagem += "\n\n" + "\n".join(mensagens_erro[:3])
-
-        return (
-            total_inserido > 0,
-            mensagem,
-            total_inserido,
-            total_erros,
-        )
-
-    except Exception as erro:
-        logger.exception(
-            "Erro geral na importação em lote de demandas"
-        )
-
-        return (
-            False,
-            "❌ Erro geral durante a importação.",
-            total_inserido,
-            len(registros) - total_inserido,
-        )
+# ================================================================
+# ORDEM DAS DEMANDAS
+# ================================================================
 
 def obter_proxima_ordem_demanda():
     """
-    Obtém o próximo valor de ordem_origem.
+    Retorna maior ordem_origem + 1.
     """
     resposta = (
         supabase
@@ -435,134 +187,356 @@ def obter_proxima_ordem_demanda():
 
     return int(maior) + 1
 
-def inserir_modelo(modulo, manual, capitulo, montadora, modelo):
-    """Insere novo modelo."""
-    try:
-        modelo_dict = {
-            'modulo': modulo,
-            'manual': manual,
-            'capitulo': capitulo,
-            'montadora': montadora,
-            'modelo': modelo
-        }
-        response = supabase.table('modelos').insert(modelo_dict).execute()
-        st.cache_data.clear()
-        logger.info(f"Modelo inserido: {modelo}")
-        return True, "✅ Modelo salvo com sucesso!"
-    except Exception as e:
-        logger.error(f"Erro ao inserir modelo: {e}")
-        return False, f"❌ Erro ao salvar: {str(e)}"
 
-def inserir_capitulo(manual, capitulo, usado_na_demanda):
-    """Insere novo capítulo."""
-    try:
-        capitulo_dict = {
-            'manual': manual,
-            'capitulo': capitulo,
-            'usado_na_demanda': usado_na_demanda
-        }
-        response = supabase.table('capitulos').insert(capitulo_dict).execute()
-        st.cache_data.clear()
-        logger.info(f"Capítulo inserido: {capitulo}")
-        return True, "✅ Capítulo salvo com sucesso!"
-    except Exception as e:
-        logger.error(f"Erro ao inserir capítulo: {e}")
-        return False, f"❌ Erro ao salvar: {str(e)}"
+# ================================================================
+# DEMANDAS
+# ================================================================
 
-# --- FUNÇÕES DE ATUALIZAÇÃO ---
-
-def atualizar_demanda(id_demanda, demanda, tipo, modulo, manual, data_linkagem, capitulo, montadora, versao):
-    """Atualiza demanda existente."""
+def inserir_demanda(
+    demanda,
+    tipo,
+    modulo,
+    manual,
+    data_linkagem,
+    capitulo,
+    montadora,
+    versao,
+):
     try:
-        demanda_dict = {
-            'demanda': demanda,
-            'tipo': tipo,
-            'modulo': modulo,
-            'manual': manual,
-            'data_linkagem': data_linkagem,
-            'capitulo': capitulo,
-            'montadora': montadora,
-            'versao': versao,
-            'updated_at': datetime.now().isoformat()
+        dados = {
+            "demanda": limpar_texto(demanda),
+            "tipo": limpar_texto(tipo),
+            "modulo": limpar_texto(modulo),
+            "manual": limpar_texto(manual),
+            "data_linkagem": data_linkagem,
+            "capitulo": limpar_texto(capitulo),
+            "montadora": limpar_texto(montadora),
+            "versao": limpar_texto(versao),
+            "ordem_origem": obter_proxima_ordem_demanda(),
         }
-        response = supabase.table('demandas').update(demanda_dict).eq('id', id_demanda).execute()
-        st.cache_data.clear()
-        logger.info(f"Demanda atualizada: ID {id_demanda}")
+
+        supabase.table("demandas").insert(dados).execute()
+        invalidar_cache()
+
+        return True, "✅ Demanda salva com sucesso!"
+
+    except Exception as erro:
+        logger.exception("Erro ao inserir demanda")
+        return False, f"❌ Erro ao salvar demanda: {erro}"
+
+
+def inserir_demandas_lote(
+    registros,
+    tamanho_lote=500,
+):
+    """
+    Insere demandas em lotes.
+
+    Se ordem_origem não vier no arquivo, ela será gerada.
+    """
+    if not registros:
+        return False, "❌ Nenhum registro para importar.", 0, 0
+
+    registros = [
+        dict(registro)
+        for registro in registros
+    ]
+
+    proxima_ordem = obter_proxima_ordem_demanda()
+
+    for indice, registro in enumerate(registros):
+        valor = registro.get("ordem_origem")
+
+        if valor in (None, "") or pd.isna(valor):
+            registro["ordem_origem"] = (
+                proxima_ordem + indice
+            )
+        else:
+            registro["ordem_origem"] = int(valor)
+
+        registro.pop("id", None)
+        registro.pop("created_at", None)
+        registro.pop("updated_at", None)
+
+    total_inserido = 0
+    total_erros = 0
+    erros = []
+
+    for inicio in range(
+        0,
+        len(registros),
+        tamanho_lote,
+    ):
+        fim = inicio + tamanho_lote
+        lote = registros[inicio:fim]
+
+        try:
+            resposta = (
+                supabase
+                .table("demandas")
+                .insert(lote)
+                .execute()
+            )
+
+            total_inserido += len(resposta.data or [])
+
+        except Exception as erro:
+            total_erros += len(lote)
+            erros.append(
+                f"Lote {inicio + 1}-{min(fim, len(registros))}: "
+                f"{erro}"
+            )
+            logger.exception("Erro ao inserir lote")
+
+    invalidar_cache()
+
+    if total_erros == 0:
+        return (
+            True,
+            f"✅ {total_inserido} demanda(s) importada(s).",
+            total_inserido,
+            0,
+        )
+
+    mensagem = (
+        f"⚠️ Importação parcial. "
+        f"Inseridas: {total_inserido}. "
+        f"Erros: {total_erros}."
+    )
+
+    if erros:
+        mensagem += "\n" + "\n".join(erros[:3])
+
+    return (
+        total_inserido > 0,
+        mensagem,
+        total_inserido,
+        total_erros,
+    )
+
+
+def atualizar_demanda(
+    id_demanda,
+    demanda,
+    tipo,
+    modulo,
+    manual,
+    data_linkagem,
+    capitulo,
+    montadora,
+    versao,
+):
+    try:
+        dados = {
+            "demanda": limpar_texto(demanda),
+            "tipo": limpar_texto(tipo),
+            "modulo": limpar_texto(modulo),
+            "manual": limpar_texto(manual),
+            "data_linkagem": data_linkagem,
+            "capitulo": limpar_texto(capitulo),
+            "montadora": limpar_texto(montadora),
+            "versao": limpar_texto(versao),
+            "updated_at": datetime.now().isoformat(),
+        }
+
+        (
+            supabase
+            .table("demandas")
+            .update(dados)
+            .eq("id", id_demanda)
+            .execute()
+        )
+
+        invalidar_cache()
+
         return True, "✅ Demanda atualizada com sucesso!"
-    except Exception as e:
-        logger.error(f"Erro ao atualizar demanda: {e}")
-        return False, f"❌ Erro ao atualizar: {str(e)}"
 
-def atualizar_modelo(id_modelo, modulo, manual, capitulo, montadora, modelo):
-    """Atualiza modelo existente."""
-    try:
-        modelo_dict = {
-            'modulo': modulo,
-            'manual': manual,
-            'capitulo': capitulo,
-            'montadora': montadora,
-            'modelo': modelo,
-            'updated_at': datetime.now().isoformat()
-        }
-        response = supabase.table('modelos').update(modelo_dict).eq('id', id_modelo).execute()
-        st.cache_data.clear()
-        logger.info(f"Modelo atualizado: ID {id_modelo}")
-        return True, "✅ Modelo atualizado com sucesso!"
-    except Exception as e:
-        logger.error(f"Erro ao atualizar modelo: {e}")
-        return False, f"❌ Erro ao atualizar: {str(e)}"
+    except Exception as erro:
+        logger.exception("Erro ao atualizar demanda")
+        return False, f"❌ Erro ao atualizar demanda: {erro}"
 
-def atualizar_capitulo(id_capitulo, manual, capitulo, usado_na_demanda):
-    """Atualiza capítulo existente."""
-    try:
-        capitulo_dict = {
-            'manual': manual,
-            'capitulo': capitulo,
-            'usado_na_demanda': usado_na_demanda,
-            'updated_at': datetime.now().isoformat()
-        }
-        response = supabase.table('capitulos').update(capitulo_dict).eq('id', id_capitulo).execute()
-        st.cache_data.clear()
-        logger.info(f"Capítulo atualizado: ID {id_capitulo}")
-        return True, "✅ Capítulo atualizado com sucesso!"
-    except Exception as e:
-        logger.error(f"Erro ao atualizar capítulo: {e}")
-        return False, f"❌ Erro ao atualizar: {str(e)}"
-
-# --- FUNÇÕES DE EXCLUSÃO ---
 
 def deletar_demanda(id_demanda):
-    """Deleta demanda."""
     try:
-        response = supabase.table('demandas').delete().eq('id', id_demanda).execute()
-        st.cache_data.clear()
-        logger.info(f"Demanda deletada: ID {id_demanda}")
-        return True, "✅ Demanda deletada com sucesso!"
-    except Exception as e:
-        logger.error(f"Erro ao deletar demanda: {e}")
-        return False, f"❌ Erro ao deletar: {str(e)}"
+        (
+            supabase
+            .table("demandas")
+            .delete()
+            .eq("id", id_demanda)
+            .execute()
+        )
+
+        invalidar_cache()
+
+        return True, "✅ Demanda excluída com sucesso!"
+
+    except Exception as erro:
+        logger.exception("Erro ao excluir demanda")
+        return False, f"❌ Erro ao excluir demanda: {erro}"
+
+
+# ================================================================
+# MODELOS
+# ================================================================
+
+def inserir_modelo(
+    modulo,
+    manual,
+    capitulo,
+    montadora,
+    modelo,
+):
+    try:
+        dados = {
+            "modulo": limpar_texto(modulo),
+            "manual": limpar_texto(manual),
+            "capitulo": limpar_texto(capitulo),
+            "montadora": limpar_texto(montadora),
+            "modelo": limpar_texto(modelo),
+        }
+
+        supabase.table("modelos").insert(dados).execute()
+        invalidar_cache()
+
+        return True, "✅ Modelo salvo com sucesso!"
+
+    except Exception as erro:
+        logger.exception("Erro ao inserir modelo")
+        return False, f"❌ Erro ao salvar modelo: {erro}"
+
+
+def atualizar_modelo(
+    id_modelo,
+    modulo,
+    manual,
+    capitulo,
+    montadora,
+    modelo,
+):
+    try:
+        dados = {
+            "modulo": limpar_texto(modulo),
+            "manual": limpar_texto(manual),
+            "capitulo": limpar_texto(capitulo),
+            "montadora": limpar_texto(montadora),
+            "modelo": limpar_texto(modelo),
+            "updated_at": datetime.now().isoformat(),
+        }
+
+        (
+            supabase
+            .table("modelos")
+            .update(dados)
+            .eq("id", id_modelo)
+            .execute()
+        )
+
+        invalidar_cache()
+
+        return True, "✅ Modelo atualizado com sucesso!"
+
+    except Exception as erro:
+        logger.exception("Erro ao atualizar modelo")
+        return False, f"❌ Erro ao atualizar modelo: {erro}"
+
 
 def deletar_modelo(id_modelo):
-    """Deleta modelo."""
     try:
-        response = supabase.table('modelos').delete().eq('id', id_modelo).execute()
-        st.cache_data.clear()
-        logger.info(f"Modelo deletado: ID {id_modelo}")
-        return True, "✅ Modelo deletado com sucesso!"
-    except Exception as e:
-        logger.error(f"Erro ao deletar modelo: {e}")
-        return False, f"❌ Erro ao deletar: {str(e)}"
+        (
+            supabase
+            .table("modelos")
+            .delete()
+            .eq("id", id_modelo)
+            .execute()
+        )
+
+        invalidar_cache()
+
+        return True, "✅ Modelo excluído com sucesso!"
+
+    except Exception as erro:
+        logger.exception("Erro ao excluir modelo")
+        return False, f"❌ Erro ao excluir modelo: {erro}"
+
+
+# ================================================================
+# CAPÍTULOS
+# ================================================================
+
+def inserir_capitulo(
+    manual,
+    capitulo,
+    usado_na_demanda,
+):
+    try:
+        dados = {
+            "manual": limpar_texto(manual),
+            "capitulo": limpar_texto(capitulo),
+            "usado_na_demanda": limpar_texto(
+                usado_na_demanda
+            ),
+        }
+
+        supabase.table("capitulos").insert(dados).execute()
+        invalidar_cache()
+
+        return True, "✅ Capítulo salvo com sucesso!"
+
+    except Exception as erro:
+        logger.exception("Erro ao inserir capítulo")
+        return False, f"❌ Erro ao salvar capítulo: {erro}"
+
+
+def atualizar_capitulo(
+    id_capitulo,
+    manual,
+    capitulo,
+    usado_na_demanda,
+):
+    try:
+        dados = {
+            "manual": limpar_texto(manual),
+            "capitulo": limpar_texto(capitulo),
+            "usado_na_demanda": limpar_texto(
+                usado_na_demanda
+            ),
+            "updated_at": datetime.now().isoformat(),
+        }
+
+        (
+            supabase
+            .table("capitulos")
+            .update(dados)
+            .eq("id", id_capitulo)
+            .execute()
+        )
+
+        invalidar_cache()
+
+        return True, "✅ Capítulo atualizado com sucesso!"
+
+    except Exception as erro:
+        logger.exception("Erro ao atualizar capítulo")
+        return False, f"❌ Erro ao atualizar capítulo: {erro}"
+
 
 def deletar_capitulo(id_capitulo):
-    """Deleta capítulo."""
     try:
-        response = supabase.table('capitulos').delete().eq('id', id_capitulo).execute()
-        st.cache_data.clear()
-        logger.info(f"Capítulo deletado: ID {id_capitulo}")
-        return True, "✅ Capítulo deletado com sucesso!"
-    except Exception as e:
-        logger.error(f"Erro ao deletar capítulo: {e}")
-        return False, f"❌ Erro ao deletar: {str(e)}"
+        (
+            supabase
+            .table("capitulos")
+            .delete()
+            .eq("id", id_capitulo)
+            .execute()
+        )
+
+        invalidar_cache()
+
+        return True, "✅ Capítulo excluído com sucesso!"
+
+    except Exception as erro:
+        logger.exception("Erro ao excluir capítulo")
+        return False, f"❌ Erro ao excluir capítulo: {erro}"
 
 # --- LISTAS GLOBAIS ---
 LISTA_TIPOS = ["NOVA", "CORREÇÃO", "UPGRADE"]
