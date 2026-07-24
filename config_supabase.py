@@ -133,10 +133,12 @@ def _carregar_todos_registros(
 @st.cache_data(ttl=600)
 def carregar_dados_demandas():
     """
-    Carrega todas as demandas em páginas de até 1.000 registros.
+    Carrega todas as demandas usando paginação.
 
-    A ordenação principal é pela data de inserção.
-    O ID é usado como critério secundário.
+    Ordem:
+    1. created_at DESC
+    2. ordem_origem DESC
+    3. id DESC
     """
     todos_registros = []
     inicio = 0
@@ -146,17 +148,18 @@ def carregar_dados_demandas():
         while True:
             fim = inicio + tamanho_pagina - 1
 
-            response = (
+            resposta = (
                 supabase
                 .table("demandas")
                 .select("*")
                 .order("created_at", desc=True)
+                .order("ordem_origem", desc=True)
                 .order("id", desc=True)
                 .range(inicio, fim)
                 .execute()
             )
 
-            registros = response.data or []
+            registros = resposta.data or []
 
             if not registros:
                 break
@@ -164,9 +167,8 @@ def carregar_dados_demandas():
             todos_registros.extend(registros)
 
             logger.info(
-                "Demandas: página carregada. "
-                "Registros nesta página: %d. "
-                "Total parcial: %d.",
+                "Página carregada: %d registros. "
+                "Total parcial: %d",
                 len(registros),
                 len(todos_registros),
             )
@@ -187,16 +189,14 @@ def carregar_dados_demandas():
 
     except Exception as erro:
         logger.exception(
-            "Erro ao carregar demandas do Supabase"
+            "Erro ao carregar demandas"
         )
 
         st.error(
-            "❌ Erro ao carregar demandas: "
-            + str(erro)
+            f"❌ Erro ao carregar demandas: {erro}"
         )
 
         return pd.DataFrame()
-
 
 @st.cache_data(ttl=600)
 def carregar_dados_modelos():
@@ -245,26 +245,65 @@ def carregar_dados_capitulos():
 
 # --- FUNÇÕES DE INSERÇÃO ---
 
-def inserir_demanda(demanda, tipo, modulo, manual, data_linkagem, capitulo, montadora, versao):
-    """Insere nova demanda."""
+def inserir_demanda(
+    demanda,
+    tipo,
+    modulo,
+    manual,
+    data_linkagem,
+    capitulo,
+    montadora,
+    versao,
+):
+    """
+    Insere uma demanda.
+
+    created_at será preenchido automaticamente pelo banco.
+    ordem_origem será o próximo número da sequência.
+    """
     try:
-        demanda_dict = {
-            'demanda': demanda,
-            'tipo': tipo,
-            'modulo': modulo,
-            'manual': manual,
-            'data_linkagem': data_linkagem,
-            'capitulo': capitulo,
-            'montadora': montadora,
-            'versao': versao
+        proxima_ordem = obter_proxima_ordem_demanda()
+
+        dados = {
+            "demanda": str(demanda).strip(),
+            "tipo": str(tipo).strip(),
+            "modulo": str(modulo).strip(),
+            "manual": str(manual).strip(),
+            "data_linkagem": data_linkagem,
+            "capitulo": str(capitulo).strip(),
+            "montadora": str(montadora).strip(),
+            "versao": str(versao).strip(),
+            "ordem_origem": proxima_ordem,
         }
-        response = supabase.table('demandas').insert(demanda_dict).execute()
+
+        (
+            supabase
+            .table("demandas")
+            .insert(dados)
+            .execute()
+        )
+
         st.cache_data.clear()
-        logger.info(f"Demanda inserida: {demanda}")
-        return True, "✅ Demanda salva com sucesso!"
-    except Exception as e:
-        logger.error(f"Erro ao inserir demanda: {e}")
-        return False, f"❌ Erro ao salvar: {str(e)}"
+
+        logger.info(
+            "Demanda inserida. ordem_origem=%d",
+            proxima_ordem,
+        )
+
+        return (
+            True,
+            "✅ Demanda salva com sucesso!",
+        )
+
+    except Exception as erro:
+        logger.exception(
+            "Erro ao inserir demanda"
+        )
+
+        return (
+            False,
+            f"❌ Erro ao salvar: {erro}",
+        )
 
 def inserir_demandas_lote(registros, tamanho_lote=500):
     """
@@ -370,6 +409,31 @@ def inserir_demandas_lote(registros, tamanho_lote=500):
             total_inserido,
             len(registros) - total_inserido,
         )
+
+def obter_proxima_ordem_demanda():
+    """
+    Obtém o próximo valor de ordem_origem.
+    """
+    resposta = (
+        supabase
+        .table("demandas")
+        .select("ordem_origem")
+        .order("ordem_origem", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    registros = resposta.data or []
+
+    if not registros:
+        return 1
+
+    maior = registros[0].get("ordem_origem")
+
+    if maior is None:
+        return 1
+
+    return int(maior) + 1
 
 def inserir_modelo(modulo, manual, capitulo, montadora, modelo):
     """Insere novo modelo."""
