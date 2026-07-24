@@ -72,49 +72,130 @@ supabase = conectar_supabase()
 
 # --- FUNÇÕES DE CARREGAMENTO ---
 
-@st.cache_data(ttl=3600)
+# --- FUNÇÕES DE CARREGAMENTO ---
+
+def _carregar_todos_registros(
+    nome_tabela,
+    tamanho_pagina=1000,
+):
+    """
+    Carrega todos os registros de uma tabela usando paginação.
+
+    O Supabase/PostgREST limita consultas grandes. Por isso,
+    os registros são buscados em blocos de até 1.000 linhas.
+    """
+    todos_os_registros = []
+    inicio = 0
+
+    while True:
+        fim = inicio + tamanho_pagina - 1
+
+        resposta = (
+            supabase
+            .table(nome_tabela)
+            .select("*")
+            .order("id")
+            .range(inicio, fim)
+            .execute()
+        )
+
+        registros = resposta.data or []
+
+        if not registros:
+            break
+
+        todos_os_registros.extend(registros)
+
+        logger.info(
+            "Tabela '%s': página carregada com %d registro(s). "
+            "Total parcial: %d",
+            nome_tabela,
+            len(registros),
+            len(todos_os_registros),
+        )
+
+        # Se vieram menos registros que o limite da página,
+        # chegamos ao final da tabela.
+        if len(registros) < tamanho_pagina:
+            break
+
+        inicio += tamanho_pagina
+
+    logger.info(
+        "Tabela '%s': total carregado: %d registro(s)",
+        nome_tabela,
+        len(todos_os_registros),
+    )
+
+    return pd.DataFrame(todos_os_registros)
+
+
+@st.cache_data(ttl=600)
 def carregar_dados_demandas():
-    """Carrega demandas do Supabase."""
+    """
+    Carrega todas as demandas do Supabase.
+    """
     try:
-        response = supabase.table('demandas').select('*').execute()
-        if response.data:
-            df = pd.DataFrame(response.data)
-            logger.info(f"Demandas carregadas: {len(df)} registros")
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        logger.error(f"Erro ao carregar demandas: {e}")
-        st.error(f"❌ Erro ao carregar demandas: {str(e)}")
+        df = _carregar_todos_registros("demandas")
+
+        logger.info(
+            "Demandas carregadas: %d registro(s)",
+            len(df),
+        )
+
+        return df
+
+    except Exception:
+        logger.exception("Erro ao carregar demandas")
+        st.error(
+            "❌ Não foi possível carregar as demandas."
+        )
         return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
+
+@st.cache_data(ttl=600)
 def carregar_dados_modelos():
-    """Carrega modelos do Supabase."""
+    """
+    Carrega todos os modelos do Supabase.
+    """
     try:
-        response = supabase.table('modelos').select('*').execute()
-        if response.data:
-            df = pd.DataFrame(response.data)
-            logger.info(f"Modelos carregados: {len(df)} registros")
-            return df
+        df = _carregar_todos_registros("modelos")
+
+        logger.info(
+            "Modelos carregados: %d registro(s)",
+            len(df),
+        )
+
+        return df
+
+    except Exception:
+        logger.exception("Erro ao carregar modelos")
+        st.error(
+            "❌ Não foi possível carregar os modelos."
+        )
         return pd.DataFrame()
-    except Exception as e:
-        logger.error(f"Erro ao carregar modelos: {e}")
-        st.error(f"❌ Erro ao carregar modelos: {str(e)}")
-        return pd.DataFrame()
+
 
 @st.cache_data(ttl=600)
 def carregar_dados_capitulos():
-    """Carrega capítulos do Supabase."""
+    """
+    Carrega todos os capítulos do Supabase.
+    """
     try:
-        response = supabase.table('capitulos').select('*').execute()
-        if response.data:
-            df = pd.DataFrame(response.data)
-            logger.info(f"Capítulos carregados: {len(df)} registros")
-            return df
-        return pd.DataFrame()
-    except Exception as e:
-        logger.error(f"Erro ao carregar capítulos: {e}")
-        st.error(f"❌ Erro ao carregar capítulos: {str(e)}")
+        df = _carregar_todos_registros("capitulos")
+
+        logger.info(
+            "Capítulos carregados: %d registro(s)",
+            len(df),
+        )
+
+        return df
+
+    except Exception:
+        logger.exception("Erro ao carregar capítulos")
+        st.error(
+            "❌ Não foi possível carregar os capítulos."
+        )
         return pd.DataFrame()
 
 # --- FUNÇÕES DE INSERÇÃO ---
