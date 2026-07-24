@@ -133,23 +133,68 @@ def _carregar_todos_registros(
 @st.cache_data(ttl=600)
 def carregar_dados_demandas():
     """
-    Carrega todas as demandas do Supabase.
+    Carrega todas as demandas em páginas de até 1.000 registros.
+
+    A ordenação principal é pela data de inserção.
+    O ID é usado como critério secundário.
     """
+    todos_registros = []
+    inicio = 0
+    tamanho_pagina = 1000
+
     try:
-        df = _carregar_todos_registros("demandas")
+        while True:
+            fim = inicio + tamanho_pagina - 1
+
+            response = (
+                supabase
+                .table("demandas")
+                .select("*")
+                .order("data_insercao", desc=True)
+                .order("id", desc=True)
+                .range(inicio, fim)
+                .execute()
+            )
+
+            registros = response.data or []
+
+            if not registros:
+                break
+
+            todos_registros.extend(registros)
+
+            logger.info(
+                "Demandas: página carregada. "
+                "Registros nesta página: %d. "
+                "Total parcial: %d.",
+                len(registros),
+                len(todos_registros),
+            )
+
+            if len(registros) < tamanho_pagina:
+                break
+
+            inicio += tamanho_pagina
+
+        df = pd.DataFrame(todos_registros)
 
         logger.info(
-            "Demandas carregadas: %d registro(s)",
+            "Total de demandas carregadas: %d",
             len(df),
         )
 
         return df
 
-    except Exception:
-        logger.exception("Erro ao carregar demandas")
-        st.error(
-            "❌ Não foi possível carregar as demandas."
+    except Exception as erro:
+        logger.exception(
+            "Erro ao carregar demandas do Supabase"
         )
+
+        st.error(
+            "❌ Erro ao carregar demandas: "
+            + str(erro)
+        )
+
         return pd.DataFrame()
 
 
